@@ -1,0 +1,135 @@
+name: Build Magisk Module
+
+on:
+  push:
+    branches: [ "dev", "main" ]
+    tags:     [ "v*" ]
+  pull_request:
+    branches: [ "dev", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [ arm64-v8a, armeabi-v7a ]
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive   # pulls dungxnd/ViPERDSP@quadric-wowdf
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+          local-cache: true
+
+      - name: Set version variables
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "name=${{ github.ref_name }}"   >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.abi }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          make ${{ matrix.abi }} \
+            VERSION_NAME="${{ steps.ver.outputs.name }}" \
+            VERSION_CODE="${{ steps.ver.outputs.code }}"
+
+      - name: Upload .so artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: libv4a_re-${{ matrix.abi }}-${{ steps.ver.outputs.name }}
+          path: out/libv4a_re_${{ matrix.abi }}.so
+          retention-days: 7
+
+  package:
+    name: Package Magisk module
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+          local-cache: true
+
+      - name: Set version variables
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "name=${{ github.ref_name }}"   >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build all ABIs & package zip
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          make zip \
+            VERSION_NAME="${{ steps.ver.outputs.name }}" \
+            VERSION_CODE="${{ steps.ver.outputs.code }}"
+
+      - name: Upload module zip artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ViPER4Android-RE-${{ steps.ver.outputs.name }}
+          path: out/ViPER4Android-RE-${{ steps.ver.outputs.name }}.zip
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: package
+    if: github.ref_type == 'tag'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download module zip
+        uses: actions/download-artifact@v8
+        with:
+          name: ViPER4Android-RE-${{ github.ref_name }}
+          path: dist/
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name:   ${{ github.ref_name }}
+          name:       "ViPER4Android RE ${{ github.ref_name }}"
+          draft:      false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files:      dist/*.zip
+          body: |
+            ## ViPER4Android Reverse Engineered ${{ github.ref_name }}
+
+            ### Installation
+            Flash via Magisk / KernelSU / APatch.
+
+            ### Changes
+            See [commits](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}) for details.
