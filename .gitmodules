@@ -1,3 +1,4 @@
 [submodule "ViPERDSP"]
 	path = ViPERDSP
-	url = https://github.com/likelikeslike/ViPERDSP.git
+	url = https://github.com/dungxnd/ViPERDSP.git
+	branch = quadric-wowdf
