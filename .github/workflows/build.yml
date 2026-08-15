@@ -84,19 +84,19 @@ jobs:
           fi
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
-      - name: Build all ABIs & package zip
+      - name: Build all ABIs & prepare module
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          make zip \
+          make module \
             VERSION_NAME="${{ steps.ver.outputs.name }}" \
             VERSION_CODE="${{ steps.ver.outputs.code }}"
 
-      - name: Upload module zip artifact
+      - name: Upload module artifact
         uses: actions/upload-artifact@v7
         with:
           name: ViPER4Android-RE-${{ steps.ver.outputs.name }}
-          path: out/ViPER4Android-RE-${{ steps.ver.outputs.name }}.zip
+          path: out/magisk_module/
           retention-days: 30
 
   release:
@@ -109,11 +109,17 @@ jobs:
       contents: write
 
     steps:
-      - name: Download module zip
+      - name: Download module directory
         uses: actions/download-artifact@v8
         with:
           name: ViPER4Android-RE-${{ github.ref_name }}
-          path: dist/
+          path: dist/module/
+
+      - name: Repackage as flashable zip
+        run: |
+          cd dist/module
+          zip -r9 ../ViPER4Android-RE-${{ github.ref_name }}.zip .
+          cd ../..
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
