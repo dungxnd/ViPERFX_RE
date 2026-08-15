@@ -82,7 +82,7 @@ zip: module
 	@echo "Creating Magisk module zip..."
 	@mkdir -p $(OUT_DIR)
 	@rm -f $(MODULE_ZIP)
-	@cd $(MODULE_OUT) && zip -r ../../$(MODULE_ZIP) .
+	@cd $(MODULE_OUT) && find . -not -name '.' | sed 's|^\./||' | zip -r ../../$(MODULE_ZIP) -@
 	@echo "Module: $(MODULE_ZIP)"
 
 # Build single ABI
