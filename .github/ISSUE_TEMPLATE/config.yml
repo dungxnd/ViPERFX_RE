@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: ViPER4Android App Issues
-    url: https://github.com/likelikeslike/ViPER4Android/issues
+    url: https://github.com/dungxnd/ViPER4Android/issues
     about: For issues with the ViPER4Android app itself, not the Magisk module.

@@ -11,13 +11,13 @@ body:
         Please confirm the following before submitting. Issues that skip these steps will be closed.
       options:
         - label: |
-            I have read the [AIDL](https://github.com/likelikeslike/ViPERFX_RE#aidl) troubleshooting section in the README.
+            I have read the [AIDL](https://github.com/dungxnd/ViPERFX_RE#aidl) troubleshooting section in the README.
           required: true
         - label: |
-            I have searched [existing issues](https://github.com/likelikeslike/ViPERFX_RE/issues?q=is%3Aissue) (both open and closed) and found no duplicate.
+            I have searched [existing issues](https://github.com/dungxnd/ViPERFX_RE/issues?q=is%3Aissue) (both open and closed) and found no duplicate.
           required: true
         - label: |
-            I am using the latest release from the [Releases page](https://github.com/likelikeslike/ViPERFX_RE/releases).
+            I am using the latest release from the [Releases page](https://github.com/dungxnd/ViPERFX_RE/releases).
           required: true
 
   - type: textarea
@@ -56,7 +56,7 @@ body:
     attributes:
       label: Diagnostic outputs
       description: |
-        Run the diagnostic commands from the [AIDL](https://github.com/likelikeslike/ViPERFX_RE#aidl) troubleshooting section and paste the outputs here.
+        Run the diagnostic commands from the [AIDL](https://github.com/dungxnd/ViPERFX_RE#aidl) troubleshooting section and paste the outputs here.
     validations:
       required: true
 
@@ -65,7 +65,7 @@ body:
     attributes:
       label: ViPER4Android app log
       description: |
-        Upload the app log from the ViPER4Android app (`/data/data/com.llsl.viper4android/files/Log/viper.log`).
+        Upload the app log from the ViPER4Android app (`/data/data/com.dxnd.viper4android/files/Log/viper.log`).
     validations:
       required: true
 

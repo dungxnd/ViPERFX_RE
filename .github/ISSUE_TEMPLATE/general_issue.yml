@@ -8,7 +8,7 @@ body:
       label: Prerequisites
       options:
         - label: |
-            I have searched [existing issues](https://github.com/likelikeslike/ViPERFX_RE/issues?q=is%3Aissue) (both open and closed) and found no duplicate.
+            I have searched [existing issues](https://github.com/dungxnd/ViPERFX_RE/issues?q=is%3Aissue) (both open and closed) and found no duplicate.
           required: true
 
   - type: dropdown
