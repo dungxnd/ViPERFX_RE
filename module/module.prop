@@ -1,6 +1,7 @@
 id=ViPER4Android-RE
 name=ViPER4Android Reverse Engineered
-version=
-versionCode=
-author=pittvandewitt, MrWhite214, Zackptg5, Martmists, Iscle, llsl
+version=2.1.0
+versionCode=260817
+author=pittvandewitt, MrWhite214, Zackptg5, Martmists, Iscle, llsl, DungxND
 description=ViPER4Android Reverse Engineered is an audio enhancing software to provide everyone with a better audio experience
+updateJson=https://github.com/dungxnd/ViPERFX_RE/releases/latest/download/update.json
