@@ -230,7 +230,7 @@ drwxrwxrwx   root        root  ...          kernel          # staged convolver k
 -rw-rw-rw- 1 root        root  ...  256 ... shm_status.bin  # driver status + version
 ```
 
-Inspect the SHM headers (magic `V4MS` = `5634 4d53`, format version `0500`):
+Inspect the SHM headers (magic `V4MS` = `5634 4d53`, format version `0600`):
 
 ```bash
 adb shell su -c 'xxd -l 8 /data/local/tmp/v4a/shm_status.bin'
@@ -238,12 +238,12 @@ adb shell su -c 'xxd -l 8 /data/local/tmp/v4a/shm_params.bin'
 adb shell su -c 'xxd -l 8 /data/local/tmp/v4a/shm_bulk.bin'
 ```
 
-Expected (all three start with the same magic + version `0500`):
+Expected (all three start with the same magic + version `0600`):
 
 ```bash
-00000000: 5634 4d53 0500 0000                      V4MS....
-00000000: 5634 4d53 0500 0000                      V4MS....
-00000000: 5634 4d53 0500 0000                      V4MS....
+00000000: 5634 4d53 0600 0000                      V4MS....
+00000000: 5634 4d53 0600 0000                      V4MS....
+00000000: 5634 4d53 0600 0000                      V4MS....
 ```
 
 If the magic is wrong, the files are truncated, or the version does not match the flashed module, the module install did not complete — reflash and reboot.
@@ -285,8 +285,9 @@ adb logcat --pid=$(adb shell pidof android.hardware.audio.service-aidl.aoc | tr 
 Prerequisites: Android NDK, CMake, Make. Set `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`).
 
 ```bash
-make libs   # build libv4a_re.so for arm64-v8a and armeabi-v7a
-make zip    # build + package a flashable Magisk module zip
+make libs     # build libv4a_re.so for arm64-v8a and armeabi-v7a
+make module   # build + stage Magisk module directory
+make zip      # build + package a flashable Magisk module zip
 ```
 
 ## Credits
