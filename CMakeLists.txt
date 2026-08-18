@@ -87,7 +87,7 @@ if(BUILD_AIDL)
         -fexceptions -frtti
         -Wall -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function)
 
-    target_link_libraries(v4a_aidl ViPERDSP log binder_ndk)
+    target_link_libraries(v4a_aidl ViPERDSP log binder_ndk android)
 
     target_link_options(v4a_aidl PRIVATE
         -Wl,--gc-sections
