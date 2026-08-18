@@ -493,21 +493,37 @@ jobs:
               link_issues: true
               generate_summary: true
               sections: [breaking, security, features, improvements, fixes, performance, infrastructure, docs]
-              languages: [en]
+              languages: ["en"]
         env:
           OPENROUTER_API_KEY: ${{ secrets.OR_KEY }}
 
       - name: Write changelog.md and patch update.json
         if: steps.check.outputs.skip == 'false'
-        env:
-          CHANGELOG_EN: ${{ fromJson(steps.llm.outputs.changelogs).default.en }}
         run: |
           VERSION="${{ steps.check.outputs.version }}"
           REPO="${{ github.repository }}"
           CHANGELOG_URL="https://github.com/${REPO}/releases/download/${VERSION}/changelog.md"
 
-          # Write changelog-only file for Magisk update checker
-          printf '%s\n' "$CHANGELOG_EN" > dist/changelog.md
+          # Extract changelog-only markdown (for Magisk update checker)
+          echo '${{ steps.llm.outputs.changelogs }}' \
+            | jq -r '.default.en // "(no changelog generated)"' \
+            > dist/changelog.md
+
+          # Build full release body (static header + LLM changelog) into a separate file
+          cat > dist/release_body.md <<'BODY_EOF'
+          ## ViPER4Android Reverse Engineered VERSION_PLACEHOLDER
+
+          ### Installation
+          Flash the zip matching your device's audio HAL:
+          - **`ViPER4Android-RE-*.zip`** — non-AIDL (Android ≤ 14 / legacy HAL)
+          - **`ViPER4Android-RE-AIDL-*.zip`** — AIDL (Android 13+ / API 33+)
+
+          Not sure which? Run: `adb shell ps -A | grep "audio.*aidl"`
+          If you see output, use the AIDL zip. Otherwise use the non-AIDL zip.
+
+          BODY_EOF
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" dist/release_body.md
+          cat dist/changelog.md >> dist/release_body.md
 
           # Patch the changelog field in both update.json files to point at the raw asset
           jq --arg url "$CHANGELOG_URL" '.changelog = $url' dist/update.json      > dist/update.json.tmp      && mv dist/update.json.tmp      dist/update.json
@@ -526,15 +542,4 @@ jobs:
             dist/update.json
             dist/update-aidl.json
             dist/changelog.md
-          body: |
-            ## ViPER4Android Reverse Engineered ${{ steps.check.outputs.version }}
-
-            ### Installation
-            Flash the zip matching your device's audio HAL:
-            - **`ViPER4Android-RE-*.zip`** — non-AIDL (Android ≤ 14 / legacy HAL)
-            - **`ViPER4Android-RE-AIDL-*.zip`** — AIDL (Android 13+ / API 33+)
-
-            Not sure which? Run: `adb shell ps -A | grep "audio.*aidl"`
-            If you see output, use the AIDL zip. Otherwise use the non-AIDL zip.
-
-            ${{ fromJson(steps.llm.outputs.changelogs).default.en }}
+          body_path: dist/release_body.md
