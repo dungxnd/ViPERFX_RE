@@ -2,7 +2,7 @@ name: Build Magisk Module
 
 on:
   push:
-    branches: [ "dev", "main" ]
+    branches: ["dev", "main"]
     paths:
       - "**.c"
       - "**.cpp"
@@ -23,7 +23,7 @@ on:
       - "ViPERDSP"
       - ".github/workflows/**"
   pull_request:
-    branches: [ "dev", "main" ]
+    branches: ["dev", "main"]
     paths:
       - "**.c"
       - "**.cpp"
@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi: [ arm64-v8a, armeabi-v7a ]
+        abi: [arm64-v8a, armeabi-v7a]
 
     steps:
       - name: Checkout source
@@ -184,9 +184,6 @@ jobs:
           git checkout
           cd ..
 
-          # NOTE: do NOT clone system/libfmq — its headers pull in platform-only
-          # deps absent from the NDK. Committed shims in aidl-shims/ replace them.
-
           mkdir -p aidl-gen/src \
             aidl-gen/include/android \
             aidl-gen/include/fmq \
@@ -263,7 +260,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi: [ arm64-v8a, armeabi-v7a ]
+        abi: [arm64-v8a, armeabi-v7a]
 
     steps:
       - name: Checkout source
@@ -346,7 +343,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [ package, package-aidl ]
+    needs: [package, package-aidl]
     if: github.event_name != 'pull_request'
 
     permissions:
@@ -356,7 +353,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # required by llm-release-action for commit history
+          fetch-depth: 0
 
       - name: Check if version already released
         id: check
@@ -399,21 +396,21 @@ jobs:
           REPO="${{ github.repository }}"
           CHANGELOG="https://github.com/${REPO}/releases/tag/${VERSION}"
           cat > dist/update.json <<EOF
-{
-  "version": "${VERSION}",
-  "versionCode": ${VERSION_CODE},
-  "zipUrl": "https://github.com/${REPO}/releases/download/${VERSION}/ViPER4Android-RE-${VERSION}.zip",
-  "changelog": "${CHANGELOG}"
-}
-EOF
+          {
+            "version": "${VERSION}",
+            "versionCode": ${VERSION_CODE},
+            "zipUrl": "https://github.com/${REPO}/releases/download/${VERSION}/ViPER4Android-RE-${VERSION}.zip",
+            "changelog": "${CHANGELOG}"
+          }
+          EOF
           cat > dist/update-aidl.json <<EOF
-{
-  "version": "${VERSION}-aidl",
-  "versionCode": ${VERSION_CODE},
-  "zipUrl": "https://github.com/${REPO}/releases/download/${VERSION}/ViPER4Android-RE-AIDL-${VERSION}.zip",
-  "changelog": "${CHANGELOG}"
-}
-EOF
+          {
+            "version": "${VERSION}-aidl",
+            "versionCode": ${VERSION_CODE},
+            "zipUrl": "https://github.com/${REPO}/releases/download/${VERSION}/ViPER4Android-RE-AIDL-${VERSION}.zip",
+            "changelog": "${CHANGELOG}"
+          }
+          EOF
           echo "--- update.json ---" && cat dist/update.json
           echo "--- update-aidl.json ---" && cat dist/update-aidl.json
 
@@ -448,7 +445,7 @@ EOF
             PREV_DSP_SHA=$(git ls-tree "${PREV_TAG}" ViPERDSP 2>/dev/null | awk '{print $3}')
           fi
 
-          # ── ViPERDSP: fetch commit log via GitHub API (public repo, no clone needed)
+          # ── ViPERDSP: fetch commit log via GitHub API
           if [ -n "$PREV_DSP_SHA" ] && [ "$PREV_DSP_SHA" != "$CUR_DSP_SHA" ]; then
             DSP_LOG=$(gh api "repos/dungxnd/ViPERDSP/compare/${PREV_DSP_SHA}...${CUR_DSP_SHA}" \
               --jq '.commits[] | "- \(.commit.message | split("\n")[0]) (\(.sha[:7])) by \(.commit.author.name)"' \
@@ -460,11 +457,10 @@ EOF
           fi
           [ -z "$DSP_LOG" ] && DSP_LOG="(no new ViPERDSP commits)"
 
-          # ── Write combined content to a temp file and reference via GITHUB_OUTPUT
           CONTENT_FILE=$(mktemp)
           cat > "$CONTENT_FILE" <<'CONTENT_EOF'
-## ViPERFX_RE
-CONTENT_EOF
+          ## ViPERFX_RE
+          CONTENT_EOF
           echo "### Commits" >> "$CONTENT_FILE"
           echo "$FX_LOG"     >> "$CONTENT_FILE"
           echo ""            >> "$CONTENT_FILE"
@@ -472,7 +468,6 @@ CONTENT_EOF
           echo "### Commits" >> "$CONTENT_FILE"
           echo "$DSP_LOG"    >> "$CONTENT_FILE"
 
-          # Use a random delimiter to avoid collision with commit message content
           DELIM="CHANGES_$(openssl rand -hex 8)"
           {
             echo "content<<${DELIM}"
@@ -504,13 +499,15 @@ CONTENT_EOF
 
       - name: Write changelog.md and patch update.json
         if: steps.check.outputs.skip == 'false'
+        env:
+          CHANGELOG_EN: ${{ fromJson(steps.llm.outputs.changelogs).default.en }}
         run: |
           VERSION="${{ steps.check.outputs.version }}"
           REPO="${{ github.repository }}"
           CHANGELOG_URL="https://github.com/${REPO}/releases/download/${VERSION}/changelog.md"
 
-          # Write changelog-only file (no Installation section) for Magisk update checker
-          printf '%s' '${{ fromJson(steps.llm.outputs.changelogs).default.en }}' > dist/changelog.md
+          # Write changelog-only file for Magisk update checker
+          printf '%s\n' "$CHANGELOG_EN" > dist/changelog.md
 
           # Patch the changelog field in both update.json files to point at the raw asset
           jq --arg url "$CHANGELOG_URL" '.changelog = $url' dist/update.json      > dist/update.json.tmp      && mv dist/update.json.tmp      dist/update.json
@@ -520,9 +517,9 @@ CONTENT_EOF
         if: steps.check.outputs.skip == 'false'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name:   ${{ steps.check.outputs.version }}
-          name:       "ViPER4Android RE ${{ steps.check.outputs.version }}"
-          draft:      false
+          tag_name: ${{ steps.check.outputs.version }}
+          name: "ViPER4Android RE ${{ steps.check.outputs.version }}"
+          draft: false
           prerelease: ${{ contains(steps.check.outputs.version, '-') }}
           files: |
             dist/*.zip
