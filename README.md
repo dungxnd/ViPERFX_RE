@@ -2,11 +2,6 @@
 
 A reverse-engineered, modernized port of ViPER4Android. The DSP has been re-implemented from a decompilation of the original `libv4a_fx.so`, with audio processed in float32, dead code removed, and dependencies refreshed.
 
-If you want ViPER on desktop instead of Android, see:
-
-- [ViPER4Windows](https://github.com/likelikeslike/ViPER4Windows)
-- [ViPER4Mac](https://github.com/likelikeslike/ViPER4Mac)
-
 ## Module Architecture
 
 ViPERFX_RE ships as **two separate Magisk modules**, both built around the same DSP engine (`ViPERDSP`) but integrated through different Android audio HAL interfaces. They are not interchangeable: each module is designed for a specific generation of Android’s audio framework. Installing the wrong one may either do nothing or cause boot issues.
@@ -39,7 +34,7 @@ If your see any process related to audio HAL with "aidl" in the name, you need t
 
 ## Installation
 
-1. Download the **module zip matching your device** (non-AIDL vs. AIDL — see [Which module should you install?](#which-module-should-you-install)) from the [Releases page](https://github.com/likelikeslike/ViPERFX_RE/releases), and the [ViPER4Android app](https://github.com/dungxnd/ViPER4Android).
+1. Download the **module zip matching your device** (non-AIDL vs. AIDL — see [Which module should you install?](#which-module-should-you-install)) from the [Releases page](https://github.com/dungxnd/ViPERFX_RE/releases), and the [ViPER4Android app](https://github.com/dungxnd/ViPER4Android).
 2. Flash the Magisk module. **Do not flash both modules.**
 3. Install the app.
 4. Reboot. Open the app and verify effects are applied (use any of the diagnostic commands below to confirm).

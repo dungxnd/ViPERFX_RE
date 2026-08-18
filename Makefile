@@ -172,7 +172,8 @@ MODULE_AIDL_OUT := $(OUT_DIR)/magisk_module_aidl
 MODULE_AIDL_ZIP := $(OUT_DIR)/ViPER4Android-RE-AIDL-$(VERSION_NAME).zip
 
 # Prepare non-AIDL Magisk module directory
-module: libs
+# Pass SKIP_LIBS=1 to skip recompilation when .so files are already in out/
+module: $(if $(SKIP_LIBS),,libs)
 	@echo "Preparing Magisk module (non-AIDL)..."
 	@rm -rf $(MODULE_OUT)
 	@mkdir -p $(MODULE_OUT)/common/files

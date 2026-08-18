@@ -3,8 +3,16 @@ name: Build Magisk Module
 on:
   push:
     branches: [ "dev", "main" ]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   pull_request:
     branches: [ "dev", "main" ]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   workflow_dispatch:
 
 permissions:
@@ -62,15 +70,6 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - name: Set up Android NDK
-        id: setup-ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r29
-          add-to-path: false
 
       - name: Set version variables
         id: ver
@@ -78,13 +77,27 @@ jobs:
           echo "name=$(grep '^version=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
           echo "code=$(grep '^versionCode=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
-      - name: Build all ABIs & prepare module
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      - name: Download arm64-v8a artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: libv4a_re-arm64-v8a-${{ steps.ver.outputs.name }}
+          path: out/
+
+      - name: Download armeabi-v7a artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: libv4a_re-armeabi-v7a-${{ steps.ver.outputs.name }}
+          path: out/
+
+      - name: Prepare module directory
         run: |
           make module \
             VERSION_NAME="${{ steps.ver.outputs.name }}" \
-            VERSION_CODE="${{ steps.ver.outputs.code }}"
+            VERSION_CODE="${{ steps.ver.outputs.code }}" \
+            SKIP_LIBS=1
+        env:
+          # module target only needs cp, sed, mkdir — no NDK required
+          ANDROID_NDK_HOME: ""
 
       - name: Upload module artifact
         uses: actions/upload-artifact@v7
