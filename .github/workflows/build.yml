@@ -480,7 +480,7 @@ jobs:
         id: llm
         uses: nosovj/llm-release-action@v1
         with:
-          model: openrouter/dots-studio/dots-3-note-preview
+          model: openrouter/dots-studio/dots-3-note-preview:free
           current_version: ${{ steps.check.outputs.version }}
           content_override: ${{ steps.changes.outputs.content }}
           changelog_config: |
