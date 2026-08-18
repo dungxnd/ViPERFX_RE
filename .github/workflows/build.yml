@@ -483,6 +483,9 @@ jobs:
           model: openrouter/dots-studio/dots-3-note-preview:free
           current_version: ${{ steps.check.outputs.version }}
           content_override: ${{ steps.changes.outputs.content }}
+          temperature: 0.1
+          max_tokens: 4000
+          timeout: 180
           changelog_config: |
             default:
               preset: developer
