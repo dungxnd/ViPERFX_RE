@@ -497,7 +497,7 @@ jobs:
               generate_summary: true
               sections: [breaking, security, features, improvements, fixes, performance, infrastructure, docs]
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_KEY }}
 
       - name: Write changelog.md and patch update.json
         if: steps.check.outputs.skip == 'false'
