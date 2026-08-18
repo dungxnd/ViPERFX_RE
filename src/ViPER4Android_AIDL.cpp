@@ -409,7 +409,9 @@ const Descriptor ViPEREffect::kDescriptor = {
 // ---------------------------------------------------------------------------
 // C entry points resolved by EffectFactory via dlsym
 // ---------------------------------------------------------------------------
-extern "C" binder_exception_t createEffect(
+#define EFFECT_EXPORT __attribute__((visibility("default")))
+
+extern "C" EFFECT_EXPORT binder_exception_t createEffect(
     const AudioUuid* in_impl_uuid,
     std::shared_ptr<aidl::android::hardware::audio::effect::IEffect>* instanceSpp
 ) {
@@ -423,7 +425,7 @@ extern "C" binder_exception_t createEffect(
     return EX_NONE;
 }
 
-extern "C" binder_exception_t queryEffect(
+extern "C" EFFECT_EXPORT binder_exception_t queryEffect(
     const AudioUuid* in_impl_uuid,
     Descriptor* _aidl_return
 ) {
@@ -435,7 +437,7 @@ extern "C" binder_exception_t queryEffect(
     return EX_NONE;
 }
 
-extern "C" binder_exception_t destroyEffect(
+extern "C" EFFECT_EXPORT binder_exception_t destroyEffect(
     const std::shared_ptr<aidl::android::hardware::audio::effect::IEffect>& /*instanceSp*/
 ) {
     // SharedRefBase handles lifetime; nothing to do
