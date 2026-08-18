@@ -480,10 +480,10 @@ jobs:
         id: llm
         uses: nosovj/llm-release-action@v1
         with:
-          model: openrouter/dots-studio/dots-3-note-preview:free
+          model: gemini/gemini-3.5-flash-lite
           current_version: ${{ steps.check.outputs.version }}
           content_override: ${{ steps.changes.outputs.content }}
-          temperature: 0.1
+          temperature: 0.3
           max_tokens: 4000
           timeout: 180
           changelog_config: |
@@ -497,7 +497,7 @@ jobs:
               generate_summary: true
               sections: [breaking, security, features, improvements, fixes, performance, infrastructure, docs]
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OR_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
       - name: Write changelog.md and patch update.json
         if: steps.check.outputs.skip == 'false'
