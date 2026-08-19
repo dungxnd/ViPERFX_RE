@@ -50,18 +50,20 @@ if $USE_AIDL; then
           sed -i "s/^libraries {/libraries {\n  v4a_aidl {\n    path $LIBPATCH\/lib\/soundfx\/libv4a_aidl.so\n  }/g" $FILE
           ;;
       *audio_effects_config*.xml)
-          sed -i "/v4a_standard_re/d" $FILE
-          sed -i "/v4a_standard_aidl/d" $FILE
-          sed -i "/v4a_aidl/d" $FILE
-          sed -i "/<libraries>/ a\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" $FILE
-          sed -i "/<effects>/ a\        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"\/>" $FILE
+          # Remove all v4a variants (both legacy and AIDL) before re-inserting
+          sed -i "/v4a_standard_re/d;/v4a_standard_aidl/d;/v4a_aidl/d;/v4a_re/d" $FILE
+          # Insert only after the FIRST <libraries> tag to avoid duplicates
+          sed -i "0,/<libraries>/s|<libraries>|<libraries>\n        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"/>|" $FILE
+          # Insert only after the FIRST <effects> tag to avoid duplicates
+          sed -i "0,/<effects>/s|<effects>|<effects>\n        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"/>|" $FILE
           ;;
       *.xml)
-          sed -i "/v4a_standard_re/d" $FILE
-          sed -i "/v4a_standard_aidl/d" $FILE
-          sed -i "/v4a_aidl/d" $FILE
-          sed -i "/<libraries>/ a\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" $FILE
-          sed -i "/<effects>/ a\        <effect name=\"v4a_standard_re\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"\/>" $FILE
+          # Remove all v4a variants (both legacy and AIDL) before re-inserting
+          sed -i "/v4a_standard_re/d;/v4a_standard_aidl/d;/v4a_aidl/d;/v4a_re/d" $FILE
+          # Insert only after the FIRST <libraries> tag to avoid duplicates
+          sed -i "0,/<libraries>/s|<libraries>|<libraries>\n        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"/>|" $FILE
+          # Insert only after the FIRST <effects> tag to avoid duplicates
+          sed -i "0,/<effects>/s|<effects>|<effects>\n        <effect name=\"v4a_standard_re\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"/>|" $FILE
           ;;
     esac
   done
