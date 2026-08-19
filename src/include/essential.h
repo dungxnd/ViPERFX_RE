@@ -859,7 +859,10 @@ struct effect_param_t {
 inline constexpr uint32_t EFFECT_LIBRARY_API_VERSION = EFFECT_MAKE_API_VERSION(3, 0);
 
 inline constexpr uint32_t AUDIO_EFFECT_LIBRARY_TAG =
-    ('A' << 24) | ('E' << 16) | ('L' << 8) | 'T';
+    (static_cast<uint32_t>(std::to_integer<uint8_t>(std::byte{'A'})) << 24) |
+    (static_cast<uint32_t>(std::to_integer<uint8_t>(std::byte{'E'})) << 16) |
+    (static_cast<uint32_t>(std::to_integer<uint8_t>(std::byte{'L'})) << 8)  |
+     static_cast<uint32_t>(std::to_integer<uint8_t>(std::byte{'T'}));
 
 // Every effect library must have a data structure named AUDIO_EFFECT_LIBRARY_INFO_SYM
 // and the fields of this data structure must begin with audio_effect_library_t

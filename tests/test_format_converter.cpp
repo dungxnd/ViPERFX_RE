@@ -101,10 +101,9 @@ TEST(FormatConverter_ToFloat, Float_Passthrough) {
 
 TEST(FormatConverter_ToFloat, UnknownFormat_DoesNotModifyDst) {
     std::array<float, 2> dst{99.0f, 88.0f};
-    // src pointer unused for unknown format
-    float dummy[2] = {1.0f, 2.0f};
-    audio_buffer_t buf = make_buffer(dummy, 1);
-    // format 0xFF is not a valid AUDIO_FORMAT — the switch default is a no-op
+    // src pointer unused for unknown format — format 0xFF is not valid
+    std::array<float, 2> dummy{1.0f, 2.0f};
+    audio_buffer_t buf = make_buffer(dummy.data(), 1);
     FormatConverter::ToFloat(dst, buf, 0xFF);
     EXPECT_FLOAT_EQ(dst[0], 99.0f);
     EXPECT_FLOAT_EQ(dst[1], 88.0f);

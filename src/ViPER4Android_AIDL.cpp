@@ -22,6 +22,7 @@
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -134,8 +135,11 @@ public:
 
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
-        (void)mContext.HandleCommand(EFFECT_CMD_INIT,       sizeof(int32_t), nullptr, &replySize, &reply);
-        (void)mContext.HandleCommand(EFFECT_CMD_SET_CONFIG,  sizeof(cfg),    &cfg,    &replySize, &reply);
+        (void)mContext.HandleCommand(EFFECT_CMD_INIT, sizeof(int32_t), nullptr, &replySize,
+                                     reinterpret_cast<std::byte*>(&reply));
+        (void)mContext.HandleCommand(EFFECT_CMD_SET_CONFIG, static_cast<uint32_t>(sizeof(cfg)),
+                                     reinterpret_cast<const std::byte*>(&cfg),
+                                     &replySize, reinterpret_cast<std::byte*>(&reply));
 
         // Allocate FMQ: stereo float frames, twice the buffer size for headroom
         const size_t kDataMQDepth   = mFrameCount * 2 /* channels */ * 2 /* headroom */;
@@ -202,11 +206,12 @@ public:
     ndk::ScopedAStatus command(CommandId cmd) override {
         std::unique_lock lock(mMutex);
         uint32_t replySize = sizeof(int32_t);
-        int32_t  reply     = 0;
+        auto reply_bytes = std::array<std::byte, sizeof(int32_t)>{};
         switch (cmd) {
             case CommandId::START:
                 if (mState == State::IDLE || mState == State::DRAINING) {
-                    (void)mContext.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &replySize, &reply);
+                    (void)mContext.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &replySize,
+                                                 reply_bytes.data());
                     startWorkerLocked();
                     mState = State::PROCESSING;
                 }
@@ -214,13 +219,15 @@ public:
             case CommandId::STOP:
                 if (mState == State::PROCESSING) {
                     stopWorkerLocked(lock);
-                    (void)mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize, &reply);
+                    (void)mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize,
+                                                 reply_bytes.data());
                     mState = State::IDLE;
                 }
                 break;
             case CommandId::RESET:
                 stopWorkerLocked(lock);
-                (void)mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize, &reply);
+                (void)mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize,
+                                             reply_bytes.data());
                 mState = State::IDLE;
                 break;
             default:
@@ -289,11 +296,11 @@ private:
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
         std::unique_lock lock(mMutex);
-        // p is const effect_param_t*; HandleCommand takes const void* for cmd_data — no cast needed.
         (void)mContext.HandleCommand(EFFECT_CMD_SET_PARAM,
                                      static_cast<uint32_t>(cmdSize),
-                                     p,
-                                     &replySize, &reply);
+                                     reinterpret_cast<const std::byte*>(p),
+                                     &replySize,
+                                     reinterpret_cast<std::byte*>(&reply));
         return ndk::ScopedAStatus::ok();
     }
 
@@ -309,22 +316,23 @@ private:
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
         constexpr size_t kReplyBuf = 4096;
-        std::vector<uint8_t> outBytes(kReplyBuf);
-        // idBytes.data() is const uint8_t*; HandleCommand takes const void* for cmd_data.
-        const auto* cmd = static_cast<const effect_param_t *>(
-            static_cast<const void *>(idBytes.data()));
-        auto* reply = static_cast<effect_param_t *>(static_cast<void *>(outBytes.data()));
+        std::vector<std::byte> outBytes(kReplyBuf);
         uint32_t replySize = static_cast<uint32_t>(kReplyBuf);
         {
             std::unique_lock lock(mMutex);
             (void)mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
                                    static_cast<uint32_t>(idBytes.size()),
-                                   cmd, &replySize, reply);
+                                   reinterpret_cast<const std::byte*>(idBytes.data()),
+                                   &replySize, outBytes.data());
         }
         outBytes.resize(replySize);
 
         DefaultExtension outExt;
-        outExt.bytes = std::move(outBytes);
+        // Convert std::byte → uint8_t for the Parcelable API.
+        outExt.bytes.resize(outBytes.size());
+        for (size_t i = 0; i < outBytes.size(); ++i) {
+            outExt.bytes[i] = std::to_integer<uint8_t>(outBytes[i]);
+        }
         VendorExtension ve;
         if (STATUS_OK != ve.extension.setParcelable(outExt)) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);

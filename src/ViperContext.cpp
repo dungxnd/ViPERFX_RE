@@ -145,9 +145,6 @@ int32_t ViperContext::HandleCommand(
         std::memcpy(reply_data, &status, sizeof(int32_t));
         return 0;
     };
-    // Alias typed pointers to the raw byte buffers for structured access.
-    const auto* typed_cmd  = reinterpret_cast<const void*>(cmd_data);
-    auto*       typed_rply = reinterpret_cast<void*>(reply_data);
 
     switch (cmd_code) {
         case EFFECT_CMD_INIT: {
@@ -161,7 +158,7 @@ int32_t ViperContext::HandleCommand(
                 || rs != sizeof(int32_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            const auto res = HandleSetConfig(static_cast<const effect_config_t*>(typed_cmd));
+            const auto res = HandleSetConfig(reinterpret_cast<const effect_config_t*>(cmd_data));
             return write_status_reply(res.error_or(0));
         }
         case EFFECT_CMD_RESET: {
@@ -195,8 +192,8 @@ int32_t ViperContext::HandleCommand(
             }
             const auto res = ParameterRouter::HandleSet(
                 cmd_size,
-                static_cast<const effect_param_t*>(typed_cmd),
-                static_cast<effect_param_t*>(typed_rply),
+                reinterpret_cast<const effect_param_t*>(cmd_data),
+                reinterpret_cast<effect_param_t*>(reply_data),
                 viper_
             );
             if (res.has_value()) {
@@ -212,8 +209,8 @@ int32_t ViperContext::HandleCommand(
             }
             const auto res = ParameterRouter::HandleGet({
                 .cmd_size          = cmd_size,
-                .cmd_param         = static_cast<const effect_param_t*>(typed_cmd),
-                .reply_param       = static_cast<effect_param_t*>(typed_rply),
+                .cmd_param         = reinterpret_cast<const effect_param_t*>(cmd_data),
+                .reply_param       = reinterpret_cast<effect_param_t*>(reply_data),
                 .reply_size_limit  = rs,
                 .dsp               = viper_,
                 .is_enabled        = enable_.load(),
@@ -230,7 +227,7 @@ int32_t ViperContext::HandleCommand(
             if (rs != sizeof(effect_config_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            *static_cast<effect_config_t*>(typed_rply) = config_;
+            *reinterpret_cast<effect_config_t*>(reply_data) = config_;
             return 0;
         }
         default: {

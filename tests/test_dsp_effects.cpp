@@ -408,7 +408,7 @@ TEST(DynamicEQ, Enabled_MaxBands_OutputIsFinite) {
     DynamicEQ deq;
     deq.SetSamplingRate(44100);
     deq.SetBandCount(DynamicEQ::kMaxBands);
-    const float freqs[] = {60, 150, 400, 800, 1600, 3200, 6400, 10000, 14000, 18000};
+    const std::array<float, 10> freqs{60, 150, 400, 800, 1600, 3200, 6400, 10000, 14000, 18000};
     for (uint32_t b = 0; b < DynamicEQ::kMaxBands; ++b) {
         deq.SetBandFrequency(b, freqs[b]);
         deq.SetBandGain(b, 3.0f);

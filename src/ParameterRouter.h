@@ -161,8 +161,15 @@ struct HandleGetArgs {
 };
 
 [[nodiscard]] inline std::expected<uint32_t, int32_t> HandleGet(HandleGetArgs args) noexcept {
-    const auto [cmd_size, cmd_param, reply_param, reply_size_limit,
-                dsp, is_enabled, disable_reason, last_streaming_frames] = args;
+    const uint32_t             cmd_size         = args.cmd_size;
+    const effect_param_t*      cmd_param        = args.cmd_param;
+    effect_param_t*            reply_param      = args.reply_param;
+    const uint32_t             reply_size_limit = args.reply_size_limit;
+    const ViPER&               dsp              = args.dsp;
+    const bool                 is_enabled       = args.is_enabled;
+    const DisableReason        disable_reason   = args.disable_reason;
+    uint64_t&                  last_streaming_frames = args.last_streaming_frames;
+
     if (cmd_size < sizeof(effect_param_t) + cmd_param->psize
         || reply_size_limit < sizeof(effect_param_t) + cmd_param->psize) {
         return std::unexpected(-EINVAL);

@@ -285,7 +285,7 @@ TEST(ViperContext_Process, WhenNotConfigured_ReturnsEINVAL) {
 // ============================================================
 
 class ViperContextProcessTest : public ::testing::Test {
-protected:
+public:
     ViperContext ctx;
     static constexpr size_t kFrames  = 480;
     static constexpr size_t kSamples = kFrames * 2; // stereo

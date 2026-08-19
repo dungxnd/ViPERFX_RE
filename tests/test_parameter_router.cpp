@@ -187,12 +187,11 @@ static std::vector<std::byte> make_blob_payload(uint32_t vsize, uint32_t arr_siz
 
 TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExceedsPayload_ReturnsEINVAL) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     // arr_size=252 is the max that fits (256 - 4); claim 253 to trigger bounds check
     auto buf = make_blob_payload(256, 253);
-    const auto* p = reinterpret_cast<const effect_param_t*>(buf.data());
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(buf.size()), p, &reply, viper
+        static_cast<uint32_t>(buf.size()), as_cparam(buf), as_param(reply_buf), viper
     );
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
@@ -200,28 +199,25 @@ TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExceedsPayload_ReturnsEINVAL) {
 
 TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExact_Succeeds) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     // arr_size=252 exactly fits (256 - sizeof(uint32_t) = 252)
     auto buf = make_blob_payload(256, 252);
-    const auto* p = reinterpret_cast<const effect_param_t*>(buf.data());
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(buf.size()), p, &reply, viper
+        static_cast<uint32_t>(buf.size()), as_cparam(buf), as_param(reply_buf), viper
     );
     // May succeed or fail depending on DSP dispatch — just must not be a bounds error
-    // i.e. the bounds check itself must pass (not return EINVAL from the guard)
     if (!res.has_value()) {
-        EXPECT_NE(res.error(), -EINVAL);  // any other error is fine; EINVAL means wrong guard fired
+        EXPECT_NE(res.error(), -EINVAL);
     }
 }
 
 TEST(ParameterRouter_HandleSet, Blob256_ArrSizeMaxUint32_ReturnsEINVAL) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     // Malicious: arr_size = UINT32_MAX — must be caught before it reaches DSP
     auto buf = make_blob_payload(256, 0xFFFFFFFFu);
-    const auto* p = reinterpret_cast<const effect_param_t*>(buf.data());
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(buf.size()), p, &reply, viper
+        static_cast<uint32_t>(buf.size()), as_cparam(buf), as_param(reply_buf), viper
     );
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
@@ -257,72 +253,50 @@ public:
     }
 };
 
+// Convenience macro to call HandleGet with named-field struct.
+#define CALL_HANDLE_GET(payload, enabled, dr, limit) \
+    ParameterRouter::HandleGet({ \
+        .cmd_size          = static_cast<uint32_t>((payload).size()), \
+        .cmd_param         = as_cparam(payload), \
+        .reply_param       = std::launder(reinterpret_cast<effect_param_t*>(reply_buf.data())), \
+        .reply_size_limit  = (limit), \
+        .dsp               = viper, \
+        .is_enabled        = (enabled), \
+        .disable_reason    = (dr), \
+        .last_streaming_frames = last_frames, \
+    })
+
 TEST_F(ParameterRouterGetTest, GetEnabled_WhenDisabled_Returns0) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetEnabled);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, false, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, false, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(read_reply_int32(), 0);
 }
 
 TEST_F(ParameterRouterGetTest, GetEnabled_WhenEnabled_Returns1) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetEnabled);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(read_reply_int32(), 1);
 }
 
 TEST_F(ParameterRouterGetTest, GetConfigure_WhenDisableReasonNone_Returns1) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetConfigure);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(read_reply_int32(), 1);
 }
 
 TEST_F(ParameterRouterGetTest, GetConfigure_WhenDisabled_Returns0) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetConfigure);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, false, DR::INVALID_SAMPLING_RATE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, false, DR::INVALID_SAMPLING_RATE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(read_reply_int32(), 0);
 }
 
 TEST_F(ParameterRouterGetTest, GetStreaming_NeverProcessed_Returns0) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetStreaming);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
     // GetProcessedFrames() == 0 and last_frames == 0 → not streaming
     EXPECT_EQ(read_reply_int32(), 0);
@@ -331,87 +305,46 @@ TEST_F(ParameterRouterGetTest, GetStreaming_NeverProcessed_Returns0) {
 TEST_F(ParameterRouterGetTest, GetSamplingRate_Default) {
     viper.SetSamplingRate(48000);
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetSamplingRate);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(read_reply_uint32(), 48000u);
 }
 
 TEST_F(ParameterRouterGetTest, GetDriverVersionCode_IsNonZeroOrZero) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetDriverVersionCode);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
-    // VERSION_CODE is defined at compile time; just verify the call succeeds
     SUCCEED();
 }
 
 TEST_F(ParameterRouterGetTest, GetDriverVersionName_WritesNonEmptyString) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetDriverVersionName);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
-    EXPECT_GT(rp->vsize, 0u); // at least 1 byte written
+    auto* rp = std::launder(reinterpret_cast<effect_param_t*>(reply_buf.data()));
+    EXPECT_GT(rp->vsize, 0u);
 }
 
 TEST_F(ParameterRouterGetTest, GetArchitecture_WritesNonEmptyString) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetArchitecture);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     ASSERT_TRUE(res.has_value());
+    auto* rp = std::launder(reinterpret_cast<effect_param_t*>(reply_buf.data()));
     EXPECT_GT(rp->vsize, 0u);
 }
 
 TEST_F(ParameterRouterGetTest, UnknownQuery_ReturnsEINVAL) {
     auto payload = make_get_payload(9999);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp, kReplyBufSize,
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE, kReplyBufSize);
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
 }
 
 TEST_F(ParameterRouterGetTest, GetConfigure_ReplyBufTooSmall_ReturnsEINVAL) {
     auto payload = make_get_payload(ParameterRouter::detail::kParamGetConfigure);
-    const auto* cp = reinterpret_cast<const effect_param_t*>(payload.data());
-    auto* rp = reinterpret_cast<effect_param_t*>(reply_buf.data());
-
     // reply_size_limit smaller than minimum required
-    auto res = ParameterRouter::HandleGet(
-        static_cast<uint32_t>(payload.size()),
-        cp, rp,
-        static_cast<uint32_t>(sizeof(effect_param_t) - 1), // too small
-        viper, true, DR::NONE, last_frames
-    );
+    auto res = CALL_HANDLE_GET(payload, true, DR::NONE,
+                               static_cast<uint32_t>(sizeof(effect_param_t) - 1));
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
 }
