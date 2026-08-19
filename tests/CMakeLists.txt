@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Required for CTest to recognise this as a testable project.
+enable_testing()
+
 # ---------------------------------------------------------------------------
 # Host build: suppress Android-only flags / definitions
 # ---------------------------------------------------------------------------
@@ -94,7 +97,10 @@ macro(viper_test name)
         ViPERDSP_host
         GTest::gtest_main
     )
-    gtest_discover_tests(${name} TIMEOUT 60)
+    # PRE_TEST: discovery runs when ctest executes, not at build time.
+    # This is more robust when sanitisers are active (POST_BUILD can silently
+    # fail to run the binary, leaving CTest with zero registered tests).
+    gtest_discover_tests(${name} TIMEOUT 60 DISCOVERY_MODE PRE_TEST)
 endmacro()
 
 # ---------------------------------------------------------------------------
