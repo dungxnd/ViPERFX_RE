@@ -52,7 +52,7 @@
 #include <fmq/AidlMessageQueue.h>
 
 #include "ViperContext.h"
-#include "viper/ViPERParams.h"
+#include "ViPERParams.h"
 #include "viper/constants.h"
 
 // ---------------------------------------------------------------------------
