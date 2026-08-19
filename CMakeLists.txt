@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project("ViPER4Android")
 
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(VERSION_CODE "00000000" CACHE STRING "Build version code")
 set(VERSION_NAME "0.0.0" CACHE STRING "Build version name")
 

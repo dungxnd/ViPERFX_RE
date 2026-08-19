@@ -22,12 +22,19 @@
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-#include <atomic>
-#include <mutex>
-#include <thread>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
-#include <vector>
+#include <mutex>
 #include <optional>
+#include <span>
+#include <string_view>
+#include <pthread.h>
+#include <sched.h>
+#include <thread>
+#include <vector>
 
 // NDK binder
 #include <android/binder_status.h>
@@ -64,17 +71,21 @@ using DataMQ = ::android::AidlMessageQueue<
 
 // ---------------------------------------------------------------------------
 // Effect UUIDs
-//   type : 7261726f-6d75-7369-6364-28e2fd3ac39e  (vendor/extension)
+//   type : 7261676f-6d75-7369-6364-28e2fd3ac39e  (vendor/extension)
 //   impl : 90380da3-8536-4744-a6a3-5731970e640f  (ViPER4Android)
 // ---------------------------------------------------------------------------
-static const AudioUuid kTypeUuid = {
-    static_cast<int32_t>(0x7261726f),
+// NOTE: AudioUuid::node is std::vector<uint8_t> in the AIDL NDK backend, which
+// performs heap allocation even in constexpr evaluation contexts. A global
+// constexpr/inline-constexpr object cannot retain a heap allocation past
+// compile-time evaluation, so these must stay `const` (not `constexpr`).
+const AudioUuid kTypeUuid = {
+    static_cast<int32_t>(0x7261676f),
     static_cast<int16_t>(0x6d75),
     static_cast<int16_t>(0x7369),
     static_cast<int16_t>(0x6364),
     {0x28, 0xe2, 0xfd, 0x3a, 0xc3, 0x9e}
 };
-static const AudioUuid kImplUuid = {
+const AudioUuid kImplUuid = {
     static_cast<int32_t>(0x90380da3),
     static_cast<int16_t>(0x8536),
     static_cast<int16_t>(0x4744),
@@ -82,20 +93,23 @@ static const AudioUuid kImplUuid = {
     {0x57, 0x31, 0x97, 0x0e, 0x64, 0x0f}
 };
 
+inline constexpr std::string_view kEffectName       = "ViPER4Android";
+inline constexpr std::string_view kImplementorName  = VIPER_AUTHORS;
+
 // ---------------------------------------------------------------------------
 // ViPEREffect — direct BnEffect implementation (no EffectImpl base class)
 // ---------------------------------------------------------------------------
 class ViPEREffect final : public BnEffect {
 public:
     ViPEREffect()  { ALOGD("ViPEREffect created"); }
-    ~ViPEREffect() { closeInternal(); ALOGD("ViPEREffect destroyed"); }
+    ~ViPEREffect() override { closeInternal(); ALOGD("ViPEREffect destroyed"); }
 
     // --- IEffect interface ---
 
     ndk::ScopedAStatus open(const Parameter::Common& common,
                             const std::optional<Parameter::Specific>& /*specific*/,
                             IEffect::OpenEffectReturn* ret) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         if (mState != State::INIT) {
             ALOGE("open: already open");
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
@@ -121,8 +135,11 @@ public:
 
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
-        mContext.HandleCommand(EFFECT_CMD_INIT,       sizeof(int32_t), nullptr, &replySize, &reply);
-        mContext.HandleCommand(EFFECT_CMD_SET_CONFIG,  sizeof(cfg),    &cfg,    &replySize, &reply);
+        (void)mContext.HandleCommand(EFFECT_CMD_INIT, sizeof(int32_t), nullptr, &replySize,
+                                     reinterpret_cast<std::byte*>(&reply));
+        (void)mContext.HandleCommand(EFFECT_CMD_SET_CONFIG, static_cast<uint32_t>(sizeof(cfg)),
+                                     reinterpret_cast<const std::byte*>(&cfg),
+                                     &replySize, reinterpret_cast<std::byte*>(&reply));
 
         // Allocate FMQ: stereo float frames, twice the buffer size for headroom
         const size_t kDataMQDepth   = mFrameCount * 2 /* channels */ * 2 /* headroom */;
@@ -133,12 +150,27 @@ public:
         mStatusMQ = std::make_unique<StatusMQ>(kStatusMQDepth, /*configureEventFlag=*/false);
 
         if (!mInputMQ->isValid() || !mOutputMQ->isValid() || !mStatusMQ->isValid()) {
-            ALOGE("open: failed to create FMQ");
-            mInputMQ.reset();
-            mOutputMQ.reset();
-            mStatusMQ.reset();
+            ALOGE(
+                "open: failed to create FMQ (dataDepth=%zu statusDepth=%zu "
+                "input=%d output=%d status=%d)",
+                kDataMQDepth,
+                kStatusMQDepth,
+                mInputMQ && mInputMQ->isValid(),
+                mOutputMQ && mOutputMQ->isValid(),
+                mStatusMQ && mStatusMQ->isValid()
+            );
+            cleanupQueuesLocked();
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
         }
+
+        // Create EventFlag once here; reused by workerLoop for every audio frame.
+        // Creating it inside the RT loop causes system calls and heap alloc per frame.
+        if (auto* efWord = mInputMQ->getEventFlagWord()) {
+            android::hardware::EventFlag::createEventFlag(efWord, &mEventFlag);
+        }
+
+        // Pre-allocate working buffer to maximum capacity to prevent RT realloc.
+        mWorkerBuf.reserve(kDataMQDepth);
 
         ret->statusMQ    = mStatusMQ->dupeDesc();
         ret->inputDataMQ = mInputMQ->dupeDesc();
@@ -150,7 +182,7 @@ public:
     }
 
     ndk::ScopedAStatus reopen(IEffect::OpenEffectReturn* ret) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         if (!mInputMQ || !mOutputMQ || !mStatusMQ) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
         }
@@ -166,33 +198,36 @@ public:
     }
 
     ndk::ScopedAStatus getState(State* state) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         *state = mState;
         return ndk::ScopedAStatus::ok();
     }
 
     ndk::ScopedAStatus command(CommandId cmd) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         uint32_t replySize = sizeof(int32_t);
-        int32_t  reply     = 0;
+        auto reply_bytes = std::array<std::byte, sizeof(int32_t)>{};
         switch (cmd) {
             case CommandId::START:
                 if (mState == State::IDLE || mState == State::DRAINING) {
-                    mContext.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &replySize, &reply);
+                    (void)mContext.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &replySize,
+                                                 reply_bytes.data());
                     startWorkerLocked();
                     mState = State::PROCESSING;
                 }
                 break;
             case CommandId::STOP:
                 if (mState == State::PROCESSING) {
-                    stopWorkerLocked();
-                    mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize, &reply);
+                    stopWorkerLocked(lock);
+                    (void)mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize,
+                                                 reply_bytes.data());
                     mState = State::IDLE;
                 }
                 break;
             case CommandId::RESET:
-                stopWorkerLocked();
-                mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize, &reply);
+                stopWorkerLocked(lock);
+                (void)mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize,
+                                             reply_bytes.data());
                 mState = State::IDLE;
                 break;
             default:
@@ -239,21 +274,33 @@ private:
         if (STATUS_OK != ve.extension.getParcelable(&ext) || !ext.has_value()) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
-        const auto& bytes = ext->bytes;
+
+        std::span<const uint8_t> bytes = ext->bytes;
         if (bytes.size() < sizeof(effect_param_t)) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
-        auto* p = const_cast<effect_param_t*>(
-            reinterpret_cast<const effect_param_t*>(bytes.data()));
-        uint32_t cmdSize = static_cast<uint32_t>(
-            sizeof(effect_param_t) + p->psize + p->vsize);
+
+        const auto* p = static_cast<const effect_param_t *>(static_cast<const void *>(bytes.data()));
+
+        // Overflow-safe bounds check: compute in size_t to avoid uint32_t wrap-around.
+        const size_t psize = p->psize;
+        const size_t vsize = p->vsize;
+        if (psize > std::numeric_limits<size_t>::max() - sizeof(effect_param_t) - vsize) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+        const size_t cmdSize = sizeof(effect_param_t) + psize + vsize;
         if (cmdSize > bytes.size()) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
+
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
-        std::lock_guard<std::mutex> lock(mMutex);
-        mContext.HandleCommand(EFFECT_CMD_SET_PARAM, cmdSize, p, &replySize, &reply);
+        std::unique_lock lock(mMutex);
+        (void)mContext.HandleCommand(EFFECT_CMD_SET_PARAM,
+                                     static_cast<uint32_t>(cmdSize),
+                                     reinterpret_cast<const std::byte*>(p),
+                                     &replySize,
+                                     reinterpret_cast<std::byte*>(&reply));
         return ndk::ScopedAStatus::ok();
     }
 
@@ -269,21 +316,23 @@ private:
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
         constexpr size_t kReplyBuf = 4096;
-        std::vector<uint8_t> outBytes(kReplyBuf);
-        auto* cmd = const_cast<effect_param_t*>(
-            reinterpret_cast<const effect_param_t*>(idBytes.data()));
-        auto* reply = reinterpret_cast<effect_param_t*>(outBytes.data());
+        std::vector<std::byte> outBytes(kReplyBuf);
         uint32_t replySize = static_cast<uint32_t>(kReplyBuf);
         {
-            std::lock_guard<std::mutex> lock(mMutex);
-            mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
+            std::unique_lock lock(mMutex);
+            (void)mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
                                    static_cast<uint32_t>(idBytes.size()),
-                                   cmd, &replySize, reply);
+                                   reinterpret_cast<const std::byte*>(idBytes.data()),
+                                   &replySize, outBytes.data());
         }
         outBytes.resize(replySize);
 
         DefaultExtension outExt;
-        outExt.bytes = std::move(outBytes);
+        // Convert std::byte → uint8_t for the Parcelable API.
+        outExt.bytes.resize(outBytes.size());
+        for (size_t i = 0; i < outBytes.size(); ++i) {
+            outExt.bytes[i] = std::to_integer<uint8_t>(outBytes[i]);
+        }
         VendorExtension ve;
         if (STATUS_OK != ve.extension.setParcelable(outExt)) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
@@ -295,58 +344,80 @@ private:
     // --- worker thread ---
 
     void startWorkerLocked() {
-        mWorkerExit = false;
-        mWorkerThread = std::thread([this] { workerLoop(); });
+        // std::jthread: RAII join + cooperative stop via stop_token; replaces
+        // std::thread + std::atomic<bool> mWorkerExit.
+        mWorkerThread = std::jthread([this](std::stop_token st) {
+            workerLoop(std::move(st));
+        });
     }
 
-    void stopWorkerLocked() {
-        mWorkerExit = true;
-        if (mInputMQ) {
-            // Wake the worker if it is blocked on the event flag
-            auto* ef = mInputMQ->getEventFlagWord();
-            if (ef) ef->fetch_or(1u, std::memory_order_relaxed);
+    // Must be called with mMutex held via a std::unique_lock so we can safely
+    // release the lock before joining (avoids deadlock with the worker).
+    void stopWorkerLocked(std::unique_lock<std::mutex>& lock) {
+        if (!mWorkerThread.joinable()) return;
+
+        // Signal cooperative stop; then issue a FUTEX_WAKE via EventFlag::wake()
+        // so the worker unblocks immediately instead of waiting up to 100ms for
+        // the EventFlag::wait() timeout to expire.
+        mWorkerThread.request_stop();
+        if (mEventFlag) {
+            mEventFlag->wake(0xFFFFFFFF);
         }
-        if (mWorkerThread.joinable()) {
-            // Release the mutex while joining to avoid deadlock
-            mMutex.unlock();
-            mWorkerThread.join();
-            mMutex.lock();
-        }
+
+        // Release mutex before joining: the worker may need the mutex to finish.
+        lock.unlock();
+        mWorkerThread.join();
+        lock.lock();
     }
 
-    void workerLoop() {
+    void workerLoop(std::stop_token stopToken) {
         ALOGD("worker: started");
-        const size_t kChannels  = 2;
-        const size_t kFrameSize = kChannels * sizeof(float);
-        std::vector<float> buf;
 
-        while (!mWorkerExit) {
-            // Wait for data (timeout 100 ms)
-            auto* ef = mInputMQ->getEventFlagWord();
-            if (ef) {
-                uint32_t bits = 0;
-                android::hardware::EventFlag* flag = nullptr;
-                if (android::hardware::EventFlag::createEventFlag(ef, &flag) == 0 && flag) {
-                    flag->wait(/*bitmask=*/0xFFFFFFFF, &bits, /*timeoutNs=*/100'000'000ULL,
-                               /*retry=*/true);
-                    android::hardware::EventFlag::deleteEventFlag(&flag);
-                }
+        // Boost to SCHED_FIFO priority 3 — same level as standard Android audio
+        // HAL worker threads — to avoid preemption-induced buffer underruns under
+        // heavy UI or game load. Fails gracefully (non-root builds) without abort.
+        {
+            struct sched_param sp{};
+            sp.sched_priority = 3;
+            if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
+                ALOGD("worker: SCHED_FIFO unavailable, continuing at SCHED_OTHER");
             }
-            if (mWorkerExit) break;
+        }
+
+        constexpr size_t kChannels = 2;
+
+        while (!stopToken.stop_requested()) {
+            // mEventFlag was created once in open(); no system call here.
+            if (mEventFlag) {
+                uint32_t bits = 0;
+                mEventFlag->wait(/*bitmask=*/0xFFFFFFFF, &bits,
+                                 /*timeoutNs=*/100'000'000ULL, /*retry=*/true);
+            }
+
+            if (stopToken.stop_requested()) break;
 
             const size_t avail = mInputMQ->availableToRead();
             if (avail == 0) continue;
 
-            buf.resize(avail);
-            if (!mInputMQ->read(buf.data(), avail)) continue;
+            // mWorkerBuf was reserve()d in open() to mFrameCount*4; resize never
+            // reallocates as long as avail stays within that capacity.
+            mWorkerBuf.resize(avail);
+            if (!mInputMQ->read(mWorkerBuf.data(), avail)) continue;
 
             const size_t frames = avail / kChannels;
-            audio_buffer_t inBuf  = { .frame_count = frames, .f32 = buf.data() };
-            audio_buffer_t outBuf = { .frame_count = frames, .f32 = buf.data() };
-            mContext.Process(&inBuf, &outBuf);
+            audio_buffer_t inBuf  = { .frame_count = frames, .f32 = mWorkerBuf.data() };
+            audio_buffer_t outBuf = { .frame_count = frames, .f32 = mWorkerBuf.data() };
+            // Hold mMutex across Process() to serialise against setParameter()
+            // (Binder thread) which modifies DSP state under the same lock.
+            // The worker runs at SCHED_FIFO 3; the Binder thread at SCHED_OTHER,
+            // so priority inversion is not a concern in the current threading model.
+            {
+                std::unique_lock lock(mMutex);
+                (void)mContext.Process(&inBuf, &outBuf);
+            }
 
             // Write processed samples to output MQ
-            mOutputMQ->write(buf.data(), avail);
+            mOutputMQ->write(mWorkerBuf.data(), avail);
 
             // Signal status
             IEffect::Status st = { STATUS_OK, static_cast<int32_t>(avail),
@@ -356,14 +427,26 @@ private:
         ALOGD("worker: stopped");
     }
 
-    // --- close helper (idempotent) ---
-    void closeInternal() {
-        std::lock_guard<std::mutex> lock(mMutex);
-        if (mState == State::INIT) return;
-        stopWorkerLocked();
+    // --- close / cleanup helpers ---
+
+    void cleanupQueuesLocked() {
+        // Destroy the EventFlag that was created in open().
+        if (mEventFlag) {
+            android::hardware::EventFlag::deleteEventFlag(&mEventFlag);
+            mEventFlag = nullptr;
+        }
+        mWorkerBuf.clear();
+        mWorkerBuf.shrink_to_fit();
         mInputMQ.reset();
         mOutputMQ.reset();
         mStatusMQ.reset();
+    }
+
+    void closeInternal() {
+        std::unique_lock lock(mMutex);
+        if (mState == State::INIT) return;
+        stopWorkerLocked(lock);
+        cleanupQueuesLocked();
         mState = State::INIT;
     }
 
@@ -377,8 +460,14 @@ private:
     std::unique_ptr<DataMQ>   mOutputMQ;
     std::unique_ptr<StatusMQ> mStatusMQ;
 
-    std::thread      mWorkerThread;
-    std::atomic<bool> mWorkerExit { false };
+    // Persistent EventFlag: created once in open(), deleted in cleanupQueuesLocked().
+    android::hardware::EventFlag* mEventFlag { nullptr };
+
+    // Pre-allocated RT processing buffer; capacity set in open(), never reallocated.
+    std::vector<float> mWorkerBuf;
+
+    // jthread: auto-joins on destruction; stop_token replaces mWorkerExit atomic.
+    std::jthread mWorkerThread;
 
     ViperContext mContext;
 };
@@ -401,17 +490,17 @@ const Descriptor ViPEREffect::kDescriptor = {
             .audioModeIndication = false,
             .audioSourceIndication = false,
         },
-        .name        = "ViPER4Android",
-        .implementor = VIPER_AUTHORS,
+        .name        = std::string(kEffectName),
+        .implementor = std::string(kImplementorName),
     }
 };
 
 // ---------------------------------------------------------------------------
 // C entry points resolved by EffectFactory via dlsym
 // ---------------------------------------------------------------------------
-#define EFFECT_EXPORT __attribute__((visibility("default")))
+extern "C" {
 
-extern "C" EFFECT_EXPORT binder_exception_t createEffect(
+[[gnu::visibility("default")]] binder_exception_t createEffect(
     const AudioUuid* in_impl_uuid,
     std::shared_ptr<aidl::android::hardware::audio::effect::IEffect>* instanceSpp
 ) {
@@ -425,7 +514,7 @@ extern "C" EFFECT_EXPORT binder_exception_t createEffect(
     return EX_NONE;
 }
 
-extern "C" EFFECT_EXPORT binder_exception_t queryEffect(
+[[gnu::visibility("default")]] binder_exception_t queryEffect(
     const AudioUuid* in_impl_uuid,
     Descriptor* _aidl_return
 ) {
@@ -437,9 +526,11 @@ extern "C" EFFECT_EXPORT binder_exception_t queryEffect(
     return EX_NONE;
 }
 
-extern "C" EFFECT_EXPORT binder_exception_t destroyEffect(
+[[gnu::visibility("default")]] binder_exception_t destroyEffect(
     const std::shared_ptr<aidl::android::hardware::audio::effect::IEffect>& /*instanceSp*/
 ) {
     // SharedRefBase handles lifetime; nothing to do
     return EX_NONE;
 }
+
+} // extern "C"

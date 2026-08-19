@@ -10,9 +10,18 @@ MODDIR=${0%/*}
 # The only safe operation here is a bind-mount fallback for ODM when the root
 # manager has not created an overlay entry for it (rare, device-specific).
 
-if [ -d "/odm/etc" ] && [ -f "$MODDIR/odm/etc/audio_effects.xml" ]; then
-  # Only bind-mount if not already overlaid
+# install.sh uses place_file() which routes ODM config to $MODPATH/system/odm/etc/.
+# Check both possible locations so this works regardless of root manager layout.
+ODM_XML=""
+if [ -f "$MODDIR/system/odm/etc/audio_effects.xml" ]; then
+  ODM_XML="$MODDIR/system/odm/etc/audio_effects.xml"
+elif [ -f "$MODDIR/odm/etc/audio_effects.xml" ]; then
+  ODM_XML="$MODDIR/odm/etc/audio_effects.xml"
+fi
+
+if [ -n "$ODM_XML" ] && [ -d "/odm/etc" ]; then
+  # Only bind-mount if /odm is not already overlaid by the root manager
   if ! grep -q "^overlay /odm" /proc/mounts 2>/dev/null; then
-    mount -o bind "$MODDIR/odm/etc/audio_effects.xml" /odm/etc/audio_effects.xml 2>/dev/null
+    mount -o bind "$ODM_XML" /odm/etc/audio_effects.xml 2>/dev/null
   fi
 fi

@@ -35,9 +35,23 @@ MODULE_ZIP     := $(OUT_DIR)/ViPER4Android-RE-$(VERSION_NAME).zip
 ADB_DEVICE     := $(shell adb devices 2>/dev/null | awk 'NR==2 && $$2=="device"{print $$1}')
 ADB            := adb$(if $(ADB_DEVICE), -s $(ADB_DEVICE),)
 
-.PHONY: all clean libs aidl-gen aidl-libs module zip deploy $(ALL_ABIS)
+.PHONY: all clean libs aidl-gen aidl-libs module zip deploy test $(ALL_ABIS)
 
 all: libs
+
+# ── Host unit tests (no NDK required; uses system g++ and GTest via FetchContent) ──
+test:
+	@echo "Building and running host unit tests..."
+	@mkdir -p $(BUILD_DIR)/tests
+	cmake -B $(BUILD_DIR)/tests \
+		-G Ninja \
+		-DCMAKE_BUILD_TYPE=Debug \
+		-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+		tests
+	cmake --build $(BUILD_DIR)/tests -- -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+	ctest --test-dir $(BUILD_DIR)/tests --output-on-failure --parallel $$(nproc 2>/dev/null || echo 4)
+
 
 # Build selected ABIs (non-AIDL)
 libs: $(ABIS)
@@ -211,7 +225,7 @@ clean:
 
 format:
 	@echo "Formatting code with clang-format..."
-	@find src/ -name '*.[ch]' -o -name '*.cpp' | xargs clang-format -i
+	@find src/ tests/ aidl-shims/ \( -name '*.h' -o -name '*.cpp' -o -name '*.c' \) -type f | xargs clang-format -i
 
 help:
 	@echo "ViPERFX_RE Build System"
@@ -229,6 +243,7 @@ help:
 	@echo "  make aidl-libs     Build libv4a_aidl.so for all ABIs"
 	@echo "  make module        Prepare Magisk module directory (auto-detects AIDL)"
 	@echo "  make zip           Build + package Magisk zip"
+	@echo "  make test          Build and run host unit tests (no NDK required)"
 	@echo "  make clean         Remove build artifacts"
 	@echo ""
 	@echo "Options:"

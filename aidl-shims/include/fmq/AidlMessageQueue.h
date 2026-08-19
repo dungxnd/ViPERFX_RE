@@ -154,7 +154,12 @@ template <typename T, typename U>
 size_t AidlMessageQueue<T, U>::availableToRead() const {
     const uint64_t w = mWritePtr->load(std::memory_order_acquire);
     const uint64_t r = mReadPtr ->load(std::memory_order_acquire);
-    return static_cast<size_t>(w >= r ? w - r : mCapacity - (r - w));
+    // mWritePtr and mReadPtr are monotonic 64-bit counters (incremented via
+    // fetch_add). w - r is always the exact number of unread elements.
+    // The old index-based branch  `mCapacity - (r - w)`  was a ring-buffer
+    // formula carried over from a non-monotonic implementation; with monotonic
+    // counters it would return a wildly incorrect value.
+    return static_cast<size_t>(w - r);
 }
 
 template <typename T, typename U>

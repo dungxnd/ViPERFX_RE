@@ -29,8 +29,10 @@ USE_AIDL=false
 LEGACY_CONFIRMED=false
 
 # ── Signal 1: Negative guard — legacy stack evidence ─────────────────────────
-# If the device has a legacy effects config or legacy proxy lib, it is almost
-# certainly running a legacy audio stack regardless of Android version.
+# Presence of legacy effects config / libeffectproxy.so is a soft legacy signal.
+# It is NOT a hard block: Android 14/15/16 AIDL-only devices (Pixel 8+, Snapdragon
+# 8 Gen 3 OEMs) keep audio_effects.xml for 32-bit vendor blob backward compat while
+# running a pure AIDL audio HAL. VINTF manifest (Signal 2b) can override this guess.
 if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
    ls /vendor/etc/audio_effects.xml 1>/dev/null 2>&1 || \
    ls /vendor/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1 || \
@@ -38,15 +40,34 @@ if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
   LEGACY_CONFIRMED=true
 fi
 
+# ── Signal 1b: VINTF override ─────────────────────────────────────────────────
+# If Signal 1 fired but the VINTF manifest (authoritative OEM SoC declaration)
+# explicitly lists the AIDL audio effect interface, the legacy XML files are kept
+# only for 32-bit compat — the device runs a true AIDL stack. Override the guess.
+# Searches all known manifest locations:
+#   /vendor/etc/vintf/   — standard Treble vendor manifest directory
+#   /vendor/manifest.xml — legacy flat manifest (pre-Treble OEMs, older devices)
+#   /odm/etc/vintf/      — ODM overlay manifests
+#   /system/etc/vintf/   — framework manifests (some OEMs list effect HALs here)
+if $LEGACY_CONFIRMED && grep -rq "android.hardware.audio.effect" \
+     /vendor/etc/vintf/ /vendor/manifest.xml \
+     /odm/etc/vintf/ /system/etc/vintf/ 2>/dev/null; then
+  ui_print "    ! VINTF declares AIDL effect iface — overriding legacy XML signal"
+  LEGACY_CONFIRMED=false
+  USE_AIDL=true
+fi
+
 # ── Signal 2: Static FS — AIDL-positive ──────────────────────────────────────
-if ! $LEGACY_CONFIRMED; then
+if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
   # 2a. AIDL HAL binaries in vendor or APEX
   if ls /vendor/bin/hw/*audio*aidl* 1>/dev/null 2>&1 || \
      ls /apex/com.android.hardware.audio/bin/hw/*audio* 1>/dev/null 2>&1; then
     USE_AIDL=true
   fi
-  # 2b. VINTF manifest declares AIDL audio effect interface
-  if ! $USE_AIDL && grep -rq "android.hardware.audio.effect" /vendor/etc/vintf/ 2>/dev/null; then
+  # 2b. VINTF manifest declares AIDL audio effect interface (all known paths)
+  if ! $USE_AIDL && grep -rq "android.hardware.audio.effect" \
+       /vendor/etc/vintf/ /vendor/manifest.xml \
+       /odm/etc/vintf/ /system/etc/vintf/ 2>/dev/null; then
     USE_AIDL=true
   fi
   # 2c. audio_effects_config.xml — AOSP AIDL-era filename (distinct from
@@ -146,15 +167,23 @@ if $USE_AIDL; then
         sed -i "/v4a_standard_re/d" "$TMP_FILE"
         sed -i "/v4a_standard_aidl/d" "$TMP_FILE"
         sed -i "/v4a_aidl/d" "$TMP_FILE"
+        # Expand self-closing tags before insertion: sed "a" appends after the
+        # opening tag line, but silently does nothing when the tag is self-closing
+        # (e.g. <libraries/> or <effects/>), leaving the config un-patched.
+        sed -i 's|<libraries/>|<libraries>\n</libraries>|g' "$TMP_FILE"
+        sed -i 's|<effects/>|<effects>\n</effects>|g' "$TMP_FILE"
         sed -i "/<libraries/ a\\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" "$TMP_FILE"
-        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$TMP_FILE"
+        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261676f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$TMP_FILE"
         ;;
       *.xml)
         sed -i "/v4a_standard_re/d" "$TMP_FILE"
         sed -i "/v4a_standard_aidl/d" "$TMP_FILE"
         sed -i "/v4a_aidl/d" "$TMP_FILE"
+        # Expand self-closing tags before insertion (same reason as above).
+        sed -i 's|<libraries/>|<libraries>\n</libraries>|g' "$TMP_FILE"
+        sed -i 's|<effects/>|<effects>\n</effects>|g' "$TMP_FILE"
         sed -i "/<libraries/ a\\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" "$TMP_FILE"
-        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_re\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$TMP_FILE"
+        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_re\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261676f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$TMP_FILE"
         ;;
     esac
     place_file "$TMP_FILE" "$OFILE"
@@ -195,6 +224,9 @@ else
       *.xml)
         sed -i "/v4a_standard_re/d" "$TMP_FILE"
         sed -i "/v4a_re/d" "$TMP_FILE"
+        # Expand self-closing tags before insertion (same reason as AIDL branch).
+        sed -i 's|<libraries/>|<libraries>\n</libraries>|g' "$TMP_FILE"
+        sed -i 's|<effects/>|<effects>\n</effects>|g' "$TMP_FILE"
         sed -i "/<libraries/ a\\        <library name=\"v4a_re\" path=\"libv4a_re.so\"\/>" "$TMP_FILE"
         sed -i "/<effects/ a\\        <effect name=\"v4a_standard_re\" library=\"v4a_re\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\"\/>" "$TMP_FILE"
         ;;

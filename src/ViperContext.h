@@ -2,59 +2,53 @@
 
 #include "essential.h"
 #include "viper/ViPER.h"
-#include <chrono>
-#include <string>
+#include "FormatConverter.h"
+#include "ParameterRouter.h"
+#include "StreamSupervisor.h"
+#include <atomic>
+#include <cstddef>
+#include <expected>
 #include <vector>
 
 class ViperContext {
 public:
-    enum class DisableReason : int32_t {
-        UNKNOWN = -1,
-        NONE = 0,
-        INVALID_FRAME_COUNT,
-        INVALID_SAMPLING_RATE,
-        INVALID_CHANNEL_COUNT,
-        INVALID_FORMAT,
-    };
+    using DisableReason = ParameterRouter::DisableReason;
+
+    static constexpr uint32_t kFadeInFrames  = StreamSupervisor::kFadeInFrames;
+    static constexpr size_t   kDefaultMaxFrames = 4096;
 
     ViperContext();
 
-    int32_t HandleCommand(
+    ViperContext(const ViperContext&) = delete;
+    ViperContext& operator=(const ViperContext&) = delete;
+    ViperContext(ViperContext&&) = delete;
+    ViperContext& operator=(ViperContext&&) = delete;
+
+    [[nodiscard]] int32_t HandleCommand(
         uint32_t cmd_code,
         uint32_t cmd_size,
-        void *cmd_data,
-        uint32_t *reply_size,
-        void *reply_data
-    );
-    int32_t Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer);
+        const std::byte* cmd_data,
+        uint32_t* reply_size,
+        std::byte* reply_data
+    ) noexcept;
+
+    [[nodiscard]] int32_t Process(audio_buffer_t* in_buffer, audio_buffer_t* out_buffer) noexcept;
 
 private:
-    effect_config_t config_;
-    DisableReason disable_reason_;
-    std::string disable_reason_message_;
+    effect_config_t config_{};
+    std::atomic<DisableReason> disable_reason_{DisableReason::NONE};
 
-    // Processing buffer
+    // Processing buffer (pre-allocated; never resized on the RT thread)
     std::vector<float> buffer_;
-    size_t buffer_frame_count_;
+    size_t buffer_frame_count_{0};
 
-    // Viper
-    bool enable_;
+    std::atomic<bool> enable_{false};
     ViPER viper_;
-    uint64_t last_streaming_frames_ = 0;
+    uint64_t last_streaming_frames_{0};
 
-    // Stream discontinuity detection
-    std::chrono::steady_clock::time_point last_process_time_;
-    bool has_processed_;
-    uint32_t fade_in_remaining_;
+    StreamSupervisor supervisor_;
 
-    static void CopyBufferConfig(buffer_config_t *dest, buffer_config_t *src);
-    void HandleSetConfig(effect_config_t *new_config);
-
-    int32_t HandleSetParam(effect_param_t *cmd_param, void *reply_data);
-    int32_t HandleGetParam(
-        effect_param_t *cmd_param, effect_param_t *reply_param, uint32_t *reply_size
-    );
-
-    void SetDisableReason(DisableReason reason);
-    void SetDisableReason(DisableReason reason, std::string message);
+    static void CopyBufferConfig(buffer_config_t& dest, const buffer_config_t& src) noexcept;
+    [[nodiscard]] std::expected<void, int32_t> HandleSetConfig(const effect_config_t* new_config);
+    void SetDisableReason(DisableReason reason) noexcept;
 };
