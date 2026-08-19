@@ -51,7 +51,11 @@ target_include_directories(ViPERDSP_host PUBLIC
     "${VIPERDSP_DIR}/include"
     "${VIPERDSP_DIR}"
 )
-target_compile_options(ViPERDSP_host PRIVATE -O2)
+target_compile_options(ViPERDSP_host PRIVATE
+    -O2
+    -Wno-sign-compare
+    -Wno-parentheses
+)
 # Host: no Android log, no ARM-specific asm guards already handled in log.h
 target_compile_definitions(ViPERDSP_host PUBLIC HOST_BUILD=1)
 
