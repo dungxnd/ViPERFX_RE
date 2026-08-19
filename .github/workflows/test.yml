@@ -48,8 +48,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build g++ \
-            libgtest-dev  # fallback; FetchContent in CMakeLists is primary
+            cmake ninja-build g++
 
       # ── 3. Configure ─────────────────────────────────────────────────────────
       # Build type: Debug for faster compile; assertions and sanitizers fire.
@@ -94,7 +93,7 @@ jobs:
       # ── 7. Publish test summary in PR/push UI ─────────────────────────────────
       - name: Publish test summary
         if: always()
-        uses: dorny/test-reporter@v2
+        uses: dorny/test-reporter@v3
         with:
           name: "GTest results (${{ matrix.os }})"
           path: tests/build/test-results.xml

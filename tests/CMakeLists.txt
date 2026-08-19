@@ -22,7 +22,7 @@ add_compile_definitions(VERSION_NAME="test")
 include(FetchContent)
 FetchContent_Declare(
     googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.80.0.tar.gz
+    URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP ON
 )
 # Prevent overriding the parent project's compiler/linker settings on Windows
