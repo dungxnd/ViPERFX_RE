@@ -10,6 +10,7 @@
 #include <memory>
 #include <new>
 #include <type_traits>
+#include <cstring>
 
 namespace {
 
@@ -80,8 +81,12 @@ int32_t ViperInterfaceCommand(
     const auto viper_handle = static_cast<ViperHandle *>(static_cast<void *>(self));
     if (viper_handle == nullptr) return -EINVAL;
 
+    // Cast void* → std::byte* at the boundary; HandleCommand uses typed bytes internally.
     return viper_handle->context.HandleCommand(
-        cmd_code, cmd_size, cmd_data, reply_size, reply_data
+        cmd_code, cmd_size,
+        static_cast<const std::byte *>(cmd_data),
+        reply_size,
+        static_cast<std::byte *>(reply_data)
     );
 }
 

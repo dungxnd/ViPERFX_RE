@@ -6,6 +6,7 @@
 #include "ParameterRouter.h"
 #include "StreamSupervisor.h"
 #include <atomic>
+#include <cstddef>
 #include <expected>
 #include <vector>
 
@@ -26,9 +27,9 @@ public:
     [[nodiscard]] int32_t HandleCommand(
         uint32_t cmd_code,
         uint32_t cmd_size,
-        const void* cmd_data,
+        const std::byte* cmd_data,
         uint32_t* reply_size,
-        void* reply_data
+        std::byte* reply_data
     ) noexcept;
 
     [[nodiscard]] int32_t Process(audio_buffer_t* in_buffer, audio_buffer_t* out_buffer) noexcept;

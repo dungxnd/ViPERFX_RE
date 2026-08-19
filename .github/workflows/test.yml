@@ -39,7 +39,7 @@ jobs:
     steps:
       # ── 1. Checkout (with submodules so ViPERDSP is available) ──────────────
       - name: Checkout source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: recursive
 
@@ -83,7 +83,7 @@ jobs:
       # ── 6. Upload test results ────────────────────────────────────────────────
       - name: Upload JUnit test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-results-${{ matrix.os }}
           path: tests/build/test-results.xml
@@ -92,7 +92,7 @@ jobs:
       # ── 7. Publish test summary in PR/push UI ─────────────────────────────────
       - name: Publish test summary
         if: always()
-        uses: dorny/test-reporter@v3
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2  # v3.0.0
         with:
           name: "GTest results (${{ matrix.os }})"
           path: tests/build/test-results.xml
@@ -108,7 +108,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: recursive
 
@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload lint output
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: clang-tidy-output
           path: lint-output.txt

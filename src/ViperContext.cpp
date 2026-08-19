@@ -5,6 +5,7 @@
 #include <cstring>
 #include <ranges>
 #include <span>
+#include <utility>
 
 namespace {
 
@@ -60,7 +61,7 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
         config_.input_cfg.sampling_rate,
         config_.input_cfg.channels,
         config_.input_cfg.format,
-        static_cast<uint8_t>(config_.input_cfg.access_mode)
+        std::to_underlying(config_.input_cfg.access_mode)
     );
     VIPER_LOGD(
         "output: frames=%zu rate=%u channels=0x%x format=%u access=%u",
@@ -68,7 +69,7 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
         config_.output_cfg.sampling_rate,
         config_.output_cfg.channels,
         config_.output_cfg.format,
-        static_cast<uint8_t>(config_.output_cfg.access_mode)
+        std::to_underlying(config_.output_cfg.access_mode)
     );
 
     if (config_.input_cfg.buffer.frame_count != config_.output_cfg.buffer.frame_count) {
@@ -134,9 +135,9 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
 int32_t ViperContext::HandleCommand(
     uint32_t cmd_code,
     uint32_t cmd_size,
-    const void* cmd_data,
+    const std::byte* cmd_data,
     uint32_t* reply_size,
-    void* reply_data
+    std::byte* reply_data
 ) noexcept {
     const uint32_t rs = reply_size == nullptr ? 0 : *reply_size;
 
@@ -144,6 +145,9 @@ int32_t ViperContext::HandleCommand(
         std::memcpy(reply_data, &status, sizeof(int32_t));
         return 0;
     };
+    // Alias typed pointers to the raw byte buffers for structured access.
+    const auto* typed_cmd  = reinterpret_cast<const void*>(cmd_data);
+    auto*       typed_rply = reinterpret_cast<void*>(reply_data);
 
     switch (cmd_code) {
         case EFFECT_CMD_INIT: {
@@ -157,7 +161,7 @@ int32_t ViperContext::HandleCommand(
                 || rs != sizeof(int32_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            const auto res = HandleSetConfig(static_cast<const effect_config_t*>(cmd_data));
+            const auto res = HandleSetConfig(static_cast<const effect_config_t*>(typed_cmd));
             return write_status_reply(res.error_or(0));
         }
         case EFFECT_CMD_RESET: {
@@ -174,14 +178,14 @@ int32_t ViperContext::HandleCommand(
             viper_.ResetAllEffects();
             std::ranges::fill(buffer_, 0.0f);
             supervisor_.OnStreamEnable();
-            enable_.store(true, std::memory_order_release);
+            enable_.store(true);
             return write_status_reply(0);
         }
         case EFFECT_CMD_DISABLE: {
             if (rs != sizeof(int32_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            enable_.store(false, std::memory_order_release);
+            enable_.store(false);
             return write_status_reply(0);
         }
         case EFFECT_CMD_SET_PARAM: {
@@ -191,8 +195,8 @@ int32_t ViperContext::HandleCommand(
             }
             const auto res = ParameterRouter::HandleSet(
                 cmd_size,
-                static_cast<const effect_param_t*>(cmd_data),
-                reply_data,
+                static_cast<const effect_param_t*>(typed_cmd),
+                static_cast<effect_param_t*>(typed_rply),
                 viper_
             );
             if (res.has_value()) {
@@ -206,16 +210,16 @@ int32_t ViperContext::HandleCommand(
                 || rs < sizeof(effect_param_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            const auto res = ParameterRouter::HandleGet(
-                cmd_size,
-                static_cast<const effect_param_t*>(cmd_data),
-                static_cast<effect_param_t*>(reply_data),
-                rs,
-                viper_,
-                enable_.load(std::memory_order_acquire),
-                disable_reason_.load(std::memory_order_relaxed),
-                last_streaming_frames_
-            );
+            const auto res = ParameterRouter::HandleGet({
+                .cmd_size          = cmd_size,
+                .cmd_param         = static_cast<const effect_param_t*>(typed_cmd),
+                .reply_param       = static_cast<effect_param_t*>(typed_rply),
+                .reply_size_limit  = rs,
+                .dsp               = viper_,
+                .is_enabled        = enable_.load(),
+                .disable_reason    = disable_reason_.load(),
+                .last_streaming_frames = last_streaming_frames_,
+            });
             if (res.has_value()) {
                 *reply_size = *res;
                 return 0;
@@ -226,7 +230,7 @@ int32_t ViperContext::HandleCommand(
             if (rs != sizeof(effect_config_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            *static_cast<effect_config_t*>(reply_data) = config_;
+            *static_cast<effect_config_t*>(typed_rply) = config_;
             return 0;
         }
         default: {
@@ -237,10 +241,10 @@ int32_t ViperContext::HandleCommand(
 }
 
 int32_t ViperContext::Process(audio_buffer_t* in_buffer, audio_buffer_t* out_buffer) noexcept {
-    if (disable_reason_.load(std::memory_order_relaxed) != DisableReason::NONE) {
+    if (disable_reason_.load() != DisableReason::NONE) {
         return -EINVAL;
     }
-    if (!enable_.load(std::memory_order_acquire)) {
+    if (!enable_.load()) {
         return -ENODATA;
     }
 
@@ -282,5 +286,5 @@ int32_t ViperContext::Process(audio_buffer_t* in_buffer, audio_buffer_t* out_buf
 }
 
 void ViperContext::SetDisableReason(DisableReason reason) noexcept {
-    disable_reason_.store(reason, std::memory_order_release);
+    disable_reason_.store(reason);
 }

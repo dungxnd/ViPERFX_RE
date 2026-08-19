@@ -49,14 +49,12 @@ fi
 #   /vendor/manifest.xml — legacy flat manifest (pre-Treble OEMs, older devices)
 #   /odm/etc/vintf/      — ODM overlay manifests
 #   /system/etc/vintf/   — framework manifests (some OEMs list effect HALs here)
-if $LEGACY_CONFIRMED; then
-  if grep -rq "android.hardware.audio.effect" \
-       /vendor/etc/vintf/ /vendor/manifest.xml \
-       /odm/etc/vintf/ /system/etc/vintf/ 2>/dev/null; then
-    ui_print "    ! VINTF declares AIDL effect iface — overriding legacy XML signal"
-    LEGACY_CONFIRMED=false
-    USE_AIDL=true
-  fi
+if $LEGACY_CONFIRMED && grep -rq "android.hardware.audio.effect" \
+     /vendor/etc/vintf/ /vendor/manifest.xml \
+     /odm/etc/vintf/ /system/etc/vintf/ 2>/dev/null; then
+  ui_print "    ! VINTF declares AIDL effect iface — overriding legacy XML signal"
+  LEGACY_CONFIRMED=false
+  USE_AIDL=true
 fi
 
 # ── Signal 2: Static FS — AIDL-positive ──────────────────────────────────────

@@ -38,11 +38,11 @@ void FloatToPcm(std::span<T> dst, std::span<const float> src, bool accumulate) n
     // lrintf(1.0f * 2147483648.0f) = 2147483648L, and casting that to int32_t
     // is signed overflow — undefined behavior.  double has enough mantissa bits
     // to represent INT32_MAX exactly, so the clamp below is tight.
-    constexpr double max_val = static_cast<double>(std::numeric_limits<T>::max());
-    constexpr double min_val = static_cast<double>(std::numeric_limits<T>::min());
+    constexpr auto max_val = static_cast<double>(std::numeric_limits<T>::max());
+    constexpr auto min_val = static_cast<double>(std::numeric_limits<T>::min());
 
     for (auto [d, s] : std::views::zip(dst, src)) {
-        const double scaled  = std::clamp(static_cast<double>(s), -1.0, 1.0) * max_val;
+        const auto scaled  = std::clamp(static_cast<double>(s), -1.0, 1.0) * max_val;
         const T pcm = static_cast<T>(std::clamp(std::nearbyint(scaled), min_val, max_val));
         if (accumulate) {
             const U temp = static_cast<U>(d) + pcm;

@@ -4,8 +4,27 @@
 #include "ViperContext.h"
 #include <gtest/gtest.h>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <vector>
+
+// Convenience wrappers: HandleCommand now uses std::byte* for type safety;
+// these helpers cast caller's typed pointers at the test boundary.
+template <typename CmdData, typename ReplyData>
+static int32_t hcmd(ViperContext& ctx, uint32_t code, uint32_t cmd_size,
+                    const CmdData* cmd_data, uint32_t* reply_size, ReplyData* reply_data) {
+    return ctx.HandleCommand(
+        code, cmd_size,
+        reinterpret_cast<const std::byte*>(cmd_data),
+        reply_size,
+        reinterpret_cast<std::byte*>(reply_data)
+    );
+}
+static int32_t hcmd(ViperContext& ctx, uint32_t code, uint32_t cmd_size,
+                    std::nullptr_t, uint32_t* reply_size, void* reply_data) {
+    return ctx.HandleCommand(code, cmd_size, nullptr, reply_size,
+                             reinterpret_cast<std::byte*>(reply_data));
+}
 
 // ============================================================
 // Test helpers
@@ -38,12 +57,9 @@ static effect_config_t make_stereo_config(
 static int32_t send_set_config(ViperContext& ctx, const effect_config_t& cfg) {
     int32_t reply = -1;
     uint32_t reply_size = sizeof(int32_t);
-    (void)ctx.HandleCommand(
-        EFFECT_CMD_SET_CONFIG,
-        static_cast<uint32_t>(sizeof(effect_config_t)),
-        &cfg,
-        &reply_size, &reply
-    );
+    (void)hcmd(ctx, EFFECT_CMD_SET_CONFIG,
+               static_cast<uint32_t>(sizeof(effect_config_t)),
+               &cfg, &reply_size, &reply);
     return reply;
 }
 
@@ -51,13 +67,13 @@ static int32_t send_set_config(ViperContext& ctx, const effect_config_t& cfg) {
 static int32_t send_enable(ViperContext& ctx) {
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    (void)ctx.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
+    (void)hcmd(ctx, EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
     return reply;
 }
 static int32_t send_disable(ViperContext& ctx) {
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    (void)ctx.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &rs, &reply);
+    (void)hcmd(ctx, EFFECT_CMD_DISABLE, 0, nullptr, &rs, &reply);
     return reply;
 }
 
@@ -69,7 +85,7 @@ TEST(ViperContext_Command, Init_Succeeds) {
     ViperContext ctx;
     int32_t reply = -1;
     uint32_t rs   = sizeof(int32_t);
-    int32_t rc = ctx.HandleCommand(EFFECT_CMD_INIT, 0, nullptr, &rs, &reply);
+    int32_t rc = hcmd(ctx, EFFECT_CMD_INIT, 0, nullptr, &rs, &reply);
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(reply, 0);
 }
@@ -78,7 +94,7 @@ TEST(ViperContext_Command, Init_WrongReplySize_ReturnsEINVAL) {
     ViperContext ctx;
     int32_t reply = -1;
     uint32_t rs   = 0; // wrong
-    int32_t rc = ctx.HandleCommand(EFFECT_CMD_INIT, 0, nullptr, &rs, &reply);
+    int32_t rc = hcmd(ctx, EFFECT_CMD_INIT, 0, nullptr, &rs, &reply);
     EXPECT_EQ(rc, -EINVAL);
 }
 
@@ -151,10 +167,8 @@ TEST(ViperContext_Command, SetConfig_NullData_ReturnsEINVAL) {
     ViperContext ctx;
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    int32_t rc = ctx.HandleCommand(
-        EFFECT_CMD_SET_CONFIG,
-        sizeof(effect_config_t), nullptr, &rs, &reply
-    );
+    int32_t rc = hcmd(ctx, EFFECT_CMD_SET_CONFIG,
+                      static_cast<uint32_t>(sizeof(effect_config_t)), nullptr, &rs, &reply);
     EXPECT_EQ(rc, -EINVAL);
 }
 
@@ -190,7 +204,7 @@ TEST(ViperContext_Command, Reset_Succeeds) {
     ViperContext ctx;
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    int32_t rc = ctx.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &rs, &reply);
+    int32_t rc = hcmd(ctx, EFFECT_CMD_RESET, 0, nullptr, &rs, &reply);
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(reply, 0);
 }
@@ -206,7 +220,7 @@ TEST(ViperContext_Command, GetConfig_ReturnsPreviouslySetConfig) {
 
     effect_config_t out{};
     uint32_t rs = sizeof(effect_config_t);
-    int32_t rc = ctx.HandleCommand(EFFECT_CMD_GET_CONFIG, 0, nullptr, &rs, &out);
+    int32_t rc = hcmd(ctx, EFFECT_CMD_GET_CONFIG, 0, nullptr, &rs, &out);
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(out.input_cfg.sampling_rate, 48000u);
     EXPECT_EQ(out.output_cfg.sampling_rate, 48000u);
@@ -221,7 +235,7 @@ TEST(ViperContext_Command, UnknownCommand_ReturnsEINVAL) {
     ViperContext ctx;
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    int32_t rc = ctx.HandleCommand(0xDEAD, 0, nullptr, &rs, &reply);
+    int32_t rc = hcmd(ctx, 0xDEAD, 0, nullptr, &rs, &reply);
     EXPECT_EQ(rc, -EINVAL);
 }
 
@@ -260,7 +274,7 @@ TEST(ViperContext_Process, WhenNotConfigured_ReturnsEINVAL) {
     // Enable without SET_CONFIG → disable_reason is UNKNOWN
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    (void)ctx.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
+    (void)hcmd(ctx, EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
 
     audio_buffer_t in_buf{}, out_buf{};
     EXPECT_EQ(ctx.Process(&in_buf, &out_buf), -EINVAL);
