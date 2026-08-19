@@ -24,7 +24,7 @@ static std::vector<std::byte> make_set_payload(int32_t param, Vals... vals) {
     constexpr uint32_t vsize = sizeof(int32_t) * sizeof...(vals);
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
-    std::vector<std::byte> buf(total, std::byte{0});
+    std::vector buf(total, std::byte{0});
     // Use std::memcpy-based construction to avoid aliasing UB with raw byte buffers.
     effect_param_t header{};
     header.status = 0;
@@ -54,7 +54,7 @@ static std::vector<std::byte> make_get_payload(int32_t query) {
     constexpr uint32_t aligned_psize = (psize + 3U) & ~3U;
     const size_t total = sizeof(effect_param_t) + aligned_psize;
 
-    std::vector<std::byte> buf(total, std::byte{0});
+    std::vector buf(total, std::byte{0});
     effect_param_t header{};
     header.psize = psize;
     header.vsize = sizeof(int32_t); // expected reply vsize
@@ -72,7 +72,7 @@ constexpr size_t kReplyBufSize = 256;
 
 TEST(ParameterRouter_HandleSet, TooSmallCmdSize_ReturnsEINVAL) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(1, 42);
     const auto* p = as_cparam(payload);
 
@@ -86,7 +86,7 @@ TEST(ParameterRouter_HandleSet, TooSmallCmdSize_ReturnsEINVAL) {
 
 TEST(ParameterRouter_HandleSet, TotalSizeMismatch_ReturnsEINVAL) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(1, 42);
     const auto* p = as_cparam(payload);
 
@@ -101,7 +101,7 @@ TEST(ParameterRouter_HandleSet, TotalSizeMismatch_ReturnsEINVAL) {
 
 TEST(ParameterRouter_HandleSet, SingleInt32Value_Succeeds) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(1, 0); // param=1 (master enable), val=0
     const auto* p = as_cparam(payload);
 
@@ -114,7 +114,7 @@ TEST(ParameterRouter_HandleSet, SingleInt32Value_Succeeds) {
 
 TEST(ParameterRouter_HandleSet, TwoInt32Values_Succeeds) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(80, 0, 0); // two-int param (e.g. eq band)
     const auto* p = as_cparam(payload);
 
@@ -126,7 +126,7 @@ TEST(ParameterRouter_HandleSet, TwoInt32Values_Succeeds) {
 
 TEST(ParameterRouter_HandleSet, ThreeInt32Values_Succeeds) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(80, 0, 0, 0);
     const auto* p = as_cparam(payload);
 
@@ -138,7 +138,7 @@ TEST(ParameterRouter_HandleSet, ThreeInt32Values_Succeeds) {
 
 TEST(ParameterRouter_HandleSet, UnknownValueSize_ReturnsEINVAL) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
 
     // Build a payload with an unusual vsize (e.g. 7 bytes)
     constexpr uint32_t psize = sizeof(int32_t);
@@ -146,7 +146,7 @@ TEST(ParameterRouter_HandleSet, UnknownValueSize_ReturnsEINVAL) {
     constexpr uint32_t vsize = 7;
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
-    std::vector<std::byte> buf(total, std::byte{0});
+    std::vector buf(total, std::byte{0});
     effect_param_t header{};
     header.psize = psize;
     header.vsize = vsize;
@@ -172,7 +172,7 @@ static std::vector<std::byte> make_blob_payload(uint32_t vsize, uint32_t arr_siz
     constexpr uint32_t aligned_psize = 4;
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
-    std::vector<std::byte> buf(total, std::byte{0});
+    std::vector buf(total, std::byte{0});
     effect_param_t header{};
     header.psize = psize;
     header.vsize = vsize;
@@ -187,7 +187,7 @@ static std::vector<std::byte> make_blob_payload(uint32_t vsize, uint32_t arr_siz
 
 TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExceedsPayload_ReturnsEINVAL) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     // arr_size=252 is the max that fits (256 - 4); claim 253 to trigger bounds check
     auto buf = make_blob_payload(256, 253);
     auto res = ParameterRouter::HandleSet(
@@ -199,8 +199,7 @@ TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExceedsPayload_ReturnsEINVAL) {
 
 TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExact_Succeeds) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
-    // arr_size=252 exactly fits (256 - sizeof(uint32_t) = 252)
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     auto buf = make_blob_payload(256, 252);
     auto res = ParameterRouter::HandleSet(
         static_cast<uint32_t>(buf.size()), as_cparam(buf), as_param(reply_buf), viper
@@ -213,7 +212,7 @@ TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExact_Succeeds) {
 
 TEST(ParameterRouter_HandleSet, Blob256_ArrSizeMaxUint32_ReturnsEINVAL) {
     ViPER viper;
-    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
+    std::vector reply_buf(sizeof(effect_param_t), std::byte{0});
     // Malicious: arr_size = UINT32_MAX — must be caught before it reaches DSP
     auto buf = make_blob_payload(256, 0xFFFFFFFFu);
     auto res = ParameterRouter::HandleSet(

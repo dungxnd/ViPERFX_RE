@@ -110,7 +110,6 @@ public:
     // Apply a linear fade-in ramp to the first kFadeInFrames frames.
     // buf must be interleaved stereo (2 samples per frame).
     // Modifies buf in-place; no-op once fade_in_remaining_ reaches 0.
-    // TODO: Remove fade-in.
     void ApplyFadeIn(std::span<float> buf, size_t frame_count) noexcept {
         if (fade_in_remaining_ == 0) return;
         const uint32_t fade_samples =

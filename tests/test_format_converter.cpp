@@ -51,7 +51,6 @@ TEST(FormatConverter_ToFloat, Pcm16_MinNegative) {
     std::array<float, 2>   dst{};
     audio_buffer_t buf = make_buffer(src.data(), 1);
     FormatConverter::ToFloat(dst, buf, AUDIO_FORMAT_PCM_16_BIT);
-    // -32768 / 32768 = -1.0; clamp(-1.0, -1, 1) = -1.0
     EXPECT_FLOAT_EQ(dst[0], -1.0f);
 }
 

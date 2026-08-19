@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <numeric>
+#include <ranges>
 #include <vector>
 
 // ============================================================
@@ -44,8 +45,7 @@ static float max_abs_diff(const std::vector<float>& a, const std::vector<float>&
 
 // True if every sample in buf is finite (no NaN / Inf).
 static bool all_finite(const std::vector<float>& buf) {
-    return std::all_of(buf.begin(), buf.end(),
-                       [](float v) { return std::isfinite(v); });
+    return std::ranges::all_of(buf, [](float v) { return std::isfinite(v); });
 }
 
 // ============================================================
@@ -145,7 +145,8 @@ TEST(FETCompressor, Enabled_OutputEnergyDoesNotExceedInput) {
     comp.SetGainDb(0.0f);
 
     constexpr uint32_t kF = 480;
-    float in_energy = 0.0f, out_energy = 0.0f;
+    float in_energy = 0.0f;
+    float out_energy = 0.0f;
     for (int chunk = 0; chunk < 180; ++chunk) {
         auto buf = sine_stereo(440.0f, 44100, kF);
         for (float v : buf) in_energy += v * v;
@@ -203,7 +204,7 @@ TEST(PlaybackGain, Volume_Zero_ProducesSilence) {
     pg.SetVolume(0.0f);
     pg.SetMaxGainFactor(1.0f);
     // Feed silence — output must be silence (gain × 0 = 0).
-    std::vector<float> buf(480 * 2, 0.0f);
+    std::vector buf(480 * 2, 0.0f);
     pg.Process(buf.data(), 480);
     for (float v : buf) EXPECT_FLOAT_EQ(v, 0.0f);
 }
@@ -370,7 +371,7 @@ TEST(TubeSimulator, InfInput_ProducesFiniteOutput) {
     ts.SetTubeType(0);
     ts.SetTubeMix(1.0f);
     ts.SetEnable(true);
-    std::vector<float> buf(480 * 2, std::numeric_limits<float>::infinity());
+    std::vector buf(480 * 2, std::numeric_limits<float>::infinity());
     ts.Process(buf.data(), 480);
     EXPECT_TRUE(all_finite(buf));
 }

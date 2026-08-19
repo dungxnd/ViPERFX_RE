@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <new>
 #include <ranges>
 #include <span>
 #include <utility>
@@ -158,7 +159,9 @@ int32_t ViperContext::HandleCommand(
                 || rs != sizeof(int32_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            const auto res = HandleSetConfig(reinterpret_cast<const effect_config_t*>(cmd_data));
+            effect_config_t new_config{};
+            std::memcpy(&new_config, cmd_data, sizeof(effect_config_t));
+            const auto res = HandleSetConfig(&new_config);
             return write_status_reply(res.error_or(0));
         }
         case EFFECT_CMD_RESET: {
@@ -192,8 +195,8 @@ int32_t ViperContext::HandleCommand(
             }
             const auto res = ParameterRouter::HandleSet(
                 cmd_size,
-                reinterpret_cast<const effect_param_t*>(cmd_data),
-                reinterpret_cast<effect_param_t*>(reply_data),
+                std::launder(reinterpret_cast<const effect_param_t*>(cmd_data)),
+                std::launder(reinterpret_cast<effect_param_t*>(reply_data)),
                 viper_
             );
             if (res.has_value()) {
@@ -209,8 +212,8 @@ int32_t ViperContext::HandleCommand(
             }
             const auto res = ParameterRouter::HandleGet({
                 .cmd_size          = cmd_size,
-                .cmd_param         = reinterpret_cast<const effect_param_t*>(cmd_data),
-                .reply_param       = reinterpret_cast<effect_param_t*>(reply_data),
+                .cmd_param         = std::launder(reinterpret_cast<const effect_param_t*>(cmd_data)),
+                .reply_param       = std::launder(reinterpret_cast<effect_param_t*>(reply_data)),
                 .reply_size_limit  = rs,
                 .dsp               = viper_,
                 .is_enabled        = enable_.load(),
@@ -227,7 +230,7 @@ int32_t ViperContext::HandleCommand(
             if (rs != sizeof(effect_config_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            *reinterpret_cast<effect_config_t*>(reply_data) = config_;
+            std::memcpy(reply_data, &config_, sizeof(effect_config_t));
             return 0;
         }
         default: {

@@ -276,7 +276,8 @@ TEST(ViperContext_Process, WhenNotConfigured_ReturnsEINVAL) {
     uint32_t rs = sizeof(int32_t);
     (void)hcmd(ctx, EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
 
-    audio_buffer_t in_buf{}, out_buf{};
+    audio_buffer_t in_buf{};
+    audio_buffer_t out_buf{};
     EXPECT_EQ(ctx.Process(&in_buf, &out_buf), -EINVAL);
 }
 
@@ -361,8 +362,8 @@ TEST(ViperContext_Process, FloatFormat_Succeeds) {
     send_set_config(ctx, cfg);
     send_enable(ctx);
 
-    std::vector<float> in_f(kSamples, 0.5f);
-    std::vector<float> out_f(kSamples, 0.0f);
+    std::vector in_f(kSamples, 0.5f);
+    std::vector out_f(kSamples, 0.0f);
 
     audio_buffer_t in_buf{};
     in_buf.frame_count = kFrames;
@@ -389,8 +390,8 @@ TEST(ViperContext_Process, AccumulateMode_AddToOutput) {
     send_set_config(ctx, cfg);
     send_enable(ctx);
 
-    std::vector<float> in_f(kFrames * 2, 0.1f);
-    std::vector<float> out_f(kFrames * 2, 0.1f); // pre-seeded
+    std::vector in_f(kFrames * 2, 0.1f);
+    std::vector out_f(kFrames * 2, 0.1f); // pre-seeded
 
     audio_buffer_t in_buf{};
     in_buf.frame_count = kFrames;
