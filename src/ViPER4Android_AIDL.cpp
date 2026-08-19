@@ -68,14 +68,18 @@ using DataMQ = ::android::AidlMessageQueue<
 //   type : 7261726f-6d75-7369-6364-28e2fd3ac39e  (vendor/extension)
 //   impl : 90380da3-8536-4744-a6a3-5731970e640f  (ViPER4Android)
 // ---------------------------------------------------------------------------
-inline constexpr AudioUuid kTypeUuid = {
+// NOTE: AudioUuid::node is std::vector<uint8_t> in the AIDL NDK backend, which
+// performs heap allocation even in constexpr evaluation contexts. A global
+// constexpr/inline-constexpr object cannot retain a heap allocation past
+// compile-time evaluation, so these must stay `const` (not `constexpr`).
+const AudioUuid kTypeUuid = {
     static_cast<int32_t>(0x7261726f),
     static_cast<int16_t>(0x6d75),
     static_cast<int16_t>(0x7369),
     static_cast<int16_t>(0x6364),
     {0x28, 0xe2, 0xfd, 0x3a, 0xc3, 0x9e}
 };
-inline constexpr AudioUuid kImplUuid = {
+const AudioUuid kImplUuid = {
     static_cast<int32_t>(0x90380da3),
     static_cast<int16_t>(0x8536),
     static_cast<int16_t>(0x4744),
@@ -125,8 +129,8 @@ public:
 
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
-        mContext.HandleCommand(EFFECT_CMD_INIT,       sizeof(int32_t), nullptr, &replySize, &reply);
-        mContext.HandleCommand(EFFECT_CMD_SET_CONFIG,  sizeof(cfg),    &cfg,    &replySize, &reply);
+        (void)mContext.HandleCommand(EFFECT_CMD_INIT,       sizeof(int32_t), nullptr, &replySize, &reply);
+        (void)mContext.HandleCommand(EFFECT_CMD_SET_CONFIG,  sizeof(cfg),    &cfg,    &replySize, &reply);
 
         // Allocate FMQ: stereo float frames, twice the buffer size for headroom
         const size_t kDataMQDepth   = mFrameCount * 2 /* channels */ * 2 /* headroom */;
@@ -190,7 +194,7 @@ public:
         switch (cmd) {
             case CommandId::START:
                 if (mState == State::IDLE || mState == State::DRAINING) {
-                    mContext.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &replySize, &reply);
+                    (void)mContext.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &replySize, &reply);
                     startWorkerLocked();
                     mState = State::PROCESSING;
                 }
@@ -198,13 +202,13 @@ public:
             case CommandId::STOP:
                 if (mState == State::PROCESSING) {
                     stopWorkerLocked();
-                    mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize, &reply);
+                    (void)mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize, &reply);
                     mState = State::IDLE;
                 }
                 break;
             case CommandId::RESET:
                 stopWorkerLocked();
-                mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize, &reply);
+                (void)mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize, &reply);
                 mState = State::IDLE;
                 break;
             default:
@@ -265,7 +269,7 @@ private:
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
         std::lock_guard<std::mutex> lock(mMutex);
-        mContext.HandleCommand(EFFECT_CMD_SET_PARAM, cmdSize, p, &replySize, &reply);
+        (void)mContext.HandleCommand(EFFECT_CMD_SET_PARAM, cmdSize, p, &replySize, &reply);
         return ndk::ScopedAStatus::ok();
     }
 
@@ -288,7 +292,7 @@ private:
         uint32_t replySize = static_cast<uint32_t>(kReplyBuf);
         {
             std::lock_guard<std::mutex> lock(mMutex);
-            mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
+            (void)mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
                                    static_cast<uint32_t>(idBytes.size()),
                                    cmd, &replySize, reply);
         }
@@ -355,7 +359,7 @@ private:
             const size_t frames = avail / kChannels;
             audio_buffer_t inBuf  = { .frame_count = frames, .f32 = buf.data() };
             audio_buffer_t outBuf = { .frame_count = frames, .f32 = buf.data() };
-            mContext.Process(&inBuf, &outBuf);
+            (void)mContext.Process(&inBuf, &outBuf);
 
             // Write processed samples to output MQ
             mOutputMQ->write(buf.data(), avail);
