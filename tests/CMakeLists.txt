@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ViPERFX_RE_Tests CXX)
+project(ViPERFX_RE_Tests C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
