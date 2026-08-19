@@ -268,65 +268,67 @@ std::expected<void, int32_t> ViperContext::HandleSetParam(
         return std::unexpected(-EINVAL);
     }
 
-    // Delegate alignment to the canonical method on effect_param_t (essential.h).
-    const uint32_t offset = cmd_param->ValueOffset();
-
-    // Security: validate that the buffer holds the full param+value payload before
-    // any read_int32/memcpy into cmd_param->data, preventing out-of-bounds reads.
-    if (cmd_size < sizeof(effect_param_t) + offset + cmd_param->vsize) {
+    // Security: validate the full param+value payload fits in cmd_size before any access.
+    if (cmd_size < cmd_param->TotalSize()) {
         return std::unexpected(-EINVAL);
     }
 
     *static_cast<int32_t *>(reply_data) = 0;
 
-    auto read_int32 = [&](uint32_t byte_offset) noexcept {
-        int32_t value;
-        std::memcpy(&value, cmd_param->data + byte_offset, sizeof(int32_t));
-        return value;
+    // ParamBytes() / ValueBytes() use the canonical Align4(psize) offset from essential.h.
+    const std::span<const std::byte> param_bytes = cmd_param->ParamBytes();
+    const std::span<const std::byte> value_bytes = cmd_param->ValueBytes();
+
+    auto read_int32 = [](std::span<const std::byte> s, size_t byte_offset = 0) noexcept {
+        int32_t v;
+        std::memcpy(&v, s.data() + byte_offset, sizeof(int32_t));
+        return v;
     };
 
-    const int32_t param = read_int32(0);
-    switch (cmd_param->vsize) {
+    const int32_t param = read_int32(param_bytes);
+    switch (value_bytes.size()) {
         case sizeof(int32_t): {
-            viper_.DispatchRawParam(param, read_int32(offset), 0, 0, 0, nullptr);
+            viper_.DispatchRawParam(param, read_int32(value_bytes), 0, 0, 0, nullptr);
             return {};
         }
         case sizeof(int32_t) * 2: {
             viper_.DispatchRawParam(
-                param, read_int32(offset), read_int32(offset + sizeof(int32_t)), 0, 0, nullptr
+                param,
+                read_int32(value_bytes),
+                read_int32(value_bytes, sizeof(int32_t)),
+                0, 0, nullptr
             );
             return {};
         }
         case sizeof(int32_t) * 3: {
             viper_.DispatchRawParam(
                 param,
-                read_int32(offset),
-                read_int32(offset + sizeof(int32_t)),
-                read_int32(offset + sizeof(int32_t) * 2),
-                0,
-                nullptr
+                read_int32(value_bytes),
+                read_int32(value_bytes, sizeof(int32_t)),
+                read_int32(value_bytes, sizeof(int32_t) * 2),
+                0, nullptr
             );
             return {};
         }
         case 256:
         case 1024: {
             uint32_t arr_size;
-            std::memcpy(&arr_size, cmd_param->data + offset, sizeof(uint32_t));
-            // Route through void* to convert between character types without
-            // reinterpret_cast; const_cast is required because DispatchRawParam
-            // takes signed char* (non-const) but the data buffer is read-only here.
-            auto *arr = static_cast<signed char *>(
-                static_cast<void *>(const_cast<char *>(cmd_param->data) + offset + sizeof(uint32_t))
+            std::memcpy(&arr_size, value_bytes.data(), sizeof(uint32_t));
+            // const_cast required: DispatchRawParam takes signed char* (non-const legacy API).
+            // The data is not modified; const_cast is the minimal necessary concession.
+            auto *arr = const_cast<signed char *>(
+                reinterpret_cast<const signed char *>(value_bytes.data() + sizeof(uint32_t))
             );
             viper_.DispatchRawParam(param, 0, 0, 0, arr_size, arr);
             return {};
         }
         case 8192: {
-            const int32_t value1 = read_int32(offset);
+            const int32_t value1 = read_int32(value_bytes);
             uint32_t arr_size;
-            std::memcpy(&arr_size, cmd_param->data + offset + sizeof(int32_t), sizeof(uint32_t));
-            auto *arr = static_cast<signed char *>(
-                static_cast<void *>(const_cast<char *>(cmd_param->data) + offset + sizeof(int32_t) + sizeof(uint32_t))
+            std::memcpy(&arr_size, value_bytes.data() + sizeof(int32_t), sizeof(uint32_t));
+            auto *arr = const_cast<signed char *>(
+                reinterpret_cast<const signed char *>(
+                    value_bytes.data() + sizeof(int32_t) + sizeof(uint32_t))
             );
             viper_.DispatchRawParam(param, value1, 0, 0, arr_size, arr);
             return {};
@@ -353,10 +355,13 @@ std::expected<uint32_t, int32_t> ViperContext::HandleGetParam(
 
     std::memcpy(reply_param, cmd_param, sizeof(effect_param_t) + cmd_param->psize);
 
+    // Read the query key from the parameter bytes (psize == sizeof(uint32_t) for GET queries).
     uint32_t query;
-    std::memcpy(&query, cmd_param->data, sizeof(uint32_t));
+    std::memcpy(&query, cmd_param->ParamBytes().data(), sizeof(uint32_t));
 
-    auto write_value = [&](const std::byte *value, uint32_t vsize) noexcept -> uint32_t {
+    // write_value: takes const void* so callers pass &value directly — no cast boilerplate.
+    // std::memcpy is defined for any object representation, so void* is correct here.
+    auto write_value = [&](const void *value, uint32_t vsize) noexcept -> uint32_t {
         reply_param->status = 0;
         reply_param->vsize = vsize;
         std::memcpy(reply_param->data + offset, value, vsize);
@@ -367,44 +372,38 @@ std::expected<uint32_t, int32_t> ViperContext::HandleGetParam(
 
     switch (query) {
         case kParamGetEnabled: {
-            const int32_t value = enable_.load() ? 1 : 0;
-            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(int32_t));
+            const int32_t value = enable_.load(std::memory_order_acquire) ? 1 : 0;
+            return write_value(&value, sizeof(int32_t));
         }
         case kParamGetConfigure: {
             const int32_t value =
-                disable_reason_.load() == DisableReason::NONE ? 1 : 0;
-            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(int32_t));
+                disable_reason_.load(std::memory_order_relaxed) == DisableReason::NONE ? 1 : 0;
+            return write_value(&value, sizeof(int32_t));
         }
         case kParamGetStreaming: {
             const uint64_t frames = viper_.GetProcessedFrames();
             const int32_t is_processing =
                 (frames != last_streaming_frames_ && frames > 0) ? 1 : 0;
             last_streaming_frames_ = frames;
-            return write_value(reinterpret_cast<const std::byte *>(&is_processing), sizeof(int32_t));
+            return write_value(&is_processing, sizeof(int32_t));
         }
         case kParamGetSamplingRate: {
             const uint32_t value = viper_.GetSamplingRate();
-            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(uint32_t));
+            return write_value(&value, sizeof(uint32_t));
         }
         case kParamGetConvolutionKernelId: {
             const uint32_t value = viper_.GetConvolverKernelID();
-            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(uint32_t));
+            return write_value(&value, sizeof(uint32_t));
         }
         case kParamGetDriverVersionCode: {
             const int32_t value = VERSION_CODE;
-            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(int32_t));
+            return write_value(&value, sizeof(int32_t));
         }
         case kParamGetDriverVersionName: {
-            return write_value(
-                reinterpret_cast<const std::byte *>(VERSION_NAME),
-                static_cast<uint32_t>(strlen(VERSION_NAME))
-            );
+            return write_value(VERSION_NAME, static_cast<uint32_t>(strlen(VERSION_NAME)));
         }
         case kParamGetArchitecture: {
-            return write_value(
-                reinterpret_cast<const std::byte *>(VIPER_ARCHITECTURE),
-                sizeof(VIPER_ARCHITECTURE) - 1
-            );
+            return write_value(VIPER_ARCHITECTURE, sizeof(VIPER_ARCHITECTURE) - 1);
         }
         default: {
             return std::unexpected(-EINVAL);
@@ -456,14 +455,14 @@ int32_t ViperContext::HandleCommand(
             std::ranges::fill(buffer_, 0.0f);
             has_processed_ = false;
             fade_in_remaining_ = 0;
-            enable_.store(true);
+            enable_.store(true, std::memory_order_release);
             return write_status_reply(0);
         }
         case EFFECT_CMD_DISABLE: {
             if (rs != sizeof(int32_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            enable_.store(false);
+            enable_.store(false, std::memory_order_release);
             return write_status_reply(0);
         }
         case EFFECT_CMD_SET_PARAM: {
@@ -511,11 +510,11 @@ int32_t ViperContext::HandleCommand(
 }
 
 int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer) noexcept {
-    if (disable_reason_.load() != DisableReason::NONE) {
+    if (disable_reason_.load(std::memory_order_relaxed) != DisableReason::NONE) {
         return -EINVAL;
     }
 
-    if (!enable_.load()) {
+    if (!enable_.load(std::memory_order_acquire)) {
         return -ENODATA;
     }
 
@@ -612,6 +611,6 @@ int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buf
 }
 
 void ViperContext::SetDisableReason(DisableReason reason, std::string_view message) {
-    disable_reason_.store(reason);
+    disable_reason_.store(reason, std::memory_order_release);
     disable_reason_message_ = message;
 }
