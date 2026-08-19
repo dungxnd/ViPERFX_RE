@@ -1,33 +1,42 @@
 #!/sbin/sh
-
-#################
-# Initialization
-#################
-
 umask 022
-
-# echo before loading util_functions
-ui_print() { echo "$1"; }
-
-require_new_magisk() {
-  ui_print "*******************************"
-  ui_print " Please install Magisk v20.4+! "
-  ui_print "*******************************"
-  exit 1
-}
-
-#########################
-# Load util_functions.sh
-#########################
 
 OUTFD=$2
 ZIPFILE=$3
 
-mount /data 2>/dev/null
+ui_print() { echo "$1"; }
 
-[ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
-. /data/adb/magisk/util_functions.sh
-[ $MAGISK_VER_CODE -lt 20400 ] && require_new_magisk
+# Locate util_functions.sh — walk Magisk, KernelSU, APatch paths in order
+UTIL_PATH=""
+for path in \
+  /data/adb/magisk/util_functions.sh \
+  /data/adb/ksu/util_functions.sh \
+  /data/adb/ap/util_functions.sh \
+  /data/adb/modules/util_functions.sh; do
+  [ -f "$path" ] && { UTIL_PATH="$path"; break; }
+done
+
+# Fallback: recovery environment — try mounting /data then retry
+if [ -z "$UTIL_PATH" ]; then
+  mount /data 2>/dev/null
+  mount /system 2>/dev/null
+  for path in \
+    /data/adb/magisk/util_functions.sh \
+    /data/adb/ksu/util_functions.sh \
+    /data/adb/ap/util_functions.sh; do
+    [ -f "$path" ] && { UTIL_PATH="$path"; break; }
+  done
+fi
+
+if [ -n "$UTIL_PATH" ]; then
+  . "$UTIL_PATH"
+else
+  ui_print "***************************************************"
+  ui_print "! Cannot find root manager environment!"
+  ui_print "! Install via Magisk, KernelSU, or APatch."
+  ui_print "***************************************************"
+  exit 1
+fi
 
 install_module
 exit 0
