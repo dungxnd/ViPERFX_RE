@@ -298,7 +298,7 @@ jobs:
 
       - name: Prepare module directory
         run: |
-          make module-combined \
+          make module \
             VERSION_NAME="${{ steps.ver.outputs.name }}" \
             VERSION_CODE="${{ steps.ver.outputs.code }}" \
             SKIP_LIBS=1
@@ -307,7 +307,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ViPER4Android-RE-${{ steps.ver.outputs.name }}
-          path: out/magisk_module_combined/
+          path: out/magisk_module/
           retention-days: 30
 
   # ── Release ───────────────────────────────────────────────────────────────
