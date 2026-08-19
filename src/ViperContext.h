@@ -37,8 +37,8 @@ public:
         const void *cmd_data,
         uint32_t *reply_size,
         void *reply_data
-    );
-    [[nodiscard]] int32_t Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer);
+    ) noexcept;
+    [[nodiscard]] int32_t Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer) noexcept;
 
 private:
     effect_config_t config_{};
@@ -59,20 +59,22 @@ private:
     bool has_processed_{false};
     uint32_t fade_in_remaining_{0};
 
-    static void CopyBufferConfig(buffer_config_t &dest, const buffer_config_t &src);
+    static void CopyBufferConfig(buffer_config_t &dest, const buffer_config_t &src) noexcept;
+
     [[nodiscard]] std::expected<void, int32_t> HandleSetConfig(
         const effect_config_t *new_config
     );
 
     [[nodiscard]] std::expected<void, int32_t> HandleSetParam(
         uint32_t cmd_size, const effect_param_t *cmd_param, void *reply_data
-    );
+    ) noexcept;
+
     [[nodiscard]] std::expected<uint32_t, int32_t> HandleGetParam(
         uint32_t cmd_size,
         const effect_param_t *cmd_param,
         effect_param_t *reply_param,
         uint32_t reply_size_limit
-    );
+    ) noexcept;
 
     void SetDisableReason(DisableReason reason, std::string_view message = "");
 };

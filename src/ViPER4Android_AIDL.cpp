@@ -22,13 +22,16 @@
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-#include <atomic>
-#include <mutex>
-#include <thread>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
-#include <vector>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 // NDK binder
 #include <android/binder_status.h>
@@ -96,14 +99,14 @@ inline constexpr std::string_view kImplementorName  = VIPER_AUTHORS;
 class ViPEREffect final : public BnEffect {
 public:
     ViPEREffect()  { ALOGD("ViPEREffect created"); }
-    ~ViPEREffect() { closeInternal(); ALOGD("ViPEREffect destroyed"); }
+    ~ViPEREffect() override { closeInternal(); ALOGD("ViPEREffect destroyed"); }
 
     // --- IEffect interface ---
 
     ndk::ScopedAStatus open(const Parameter::Common& common,
                             const std::optional<Parameter::Specific>& /*specific*/,
                             IEffect::OpenEffectReturn* ret) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock<std::mutex> lock(mMutex);
         if (mState != State::INIT) {
             ALOGE("open: already open");
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
@@ -150,11 +153,18 @@ public:
                 mOutputMQ && mOutputMQ->isValid(),
                 mStatusMQ && mStatusMQ->isValid()
             );
-            mInputMQ.reset();
-            mOutputMQ.reset();
-            mStatusMQ.reset();
+            cleanupQueuesLocked();
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
         }
+
+        // Create EventFlag once here; reused by workerLoop for every audio frame.
+        // Creating it inside the RT loop causes system calls and heap alloc per frame.
+        if (auto* efWord = mInputMQ->getEventFlagWord()) {
+            android::hardware::EventFlag::createEventFlag(efWord, &mEventFlag);
+        }
+
+        // Pre-allocate working buffer to maximum capacity to prevent RT realloc.
+        mWorkerBuf.reserve(kDataMQDepth);
 
         ret->statusMQ    = mStatusMQ->dupeDesc();
         ret->inputDataMQ = mInputMQ->dupeDesc();
@@ -166,7 +176,7 @@ public:
     }
 
     ndk::ScopedAStatus reopen(IEffect::OpenEffectReturn* ret) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock<std::mutex> lock(mMutex);
         if (!mInputMQ || !mOutputMQ || !mStatusMQ) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
         }
@@ -182,13 +192,13 @@ public:
     }
 
     ndk::ScopedAStatus getState(State* state) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock<std::mutex> lock(mMutex);
         *state = mState;
         return ndk::ScopedAStatus::ok();
     }
 
     ndk::ScopedAStatus command(CommandId cmd) override {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock<std::mutex> lock(mMutex);
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
         switch (cmd) {
@@ -201,13 +211,13 @@ public:
                 break;
             case CommandId::STOP:
                 if (mState == State::PROCESSING) {
-                    stopWorkerLocked();
+                    stopWorkerLocked(lock);
                     (void)mContext.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &replySize, &reply);
                     mState = State::IDLE;
                 }
                 break;
             case CommandId::RESET:
-                stopWorkerLocked();
+                stopWorkerLocked(lock);
                 (void)mContext.HandleCommand(EFFECT_CMD_RESET, 0, nullptr, &replySize, &reply);
                 mState = State::IDLE;
                 break;
@@ -255,21 +265,32 @@ private:
         if (STATUS_OK != ve.extension.getParcelable(&ext) || !ext.has_value()) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
-        const auto& bytes = ext->bytes;
+
+        std::span<const uint8_t> bytes = ext->bytes;
         if (bytes.size() < sizeof(effect_param_t)) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
-        auto* p = const_cast<effect_param_t*>(
-            reinterpret_cast<const effect_param_t*>(bytes.data()));
-        uint32_t cmdSize = static_cast<uint32_t>(
-            sizeof(effect_param_t) + p->psize + p->vsize);
+
+        const auto* p = reinterpret_cast<const effect_param_t*>(bytes.data());
+
+        // Overflow-safe bounds check: compute in size_t to avoid uint32_t wrap-around.
+        const size_t psize = p->psize;
+        const size_t vsize = p->vsize;
+        if (psize > std::numeric_limits<size_t>::max() - sizeof(effect_param_t) - vsize) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+        const size_t cmdSize = sizeof(effect_param_t) + psize + vsize;
         if (cmdSize > bytes.size()) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
+
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
-        std::lock_guard<std::mutex> lock(mMutex);
-        (void)mContext.HandleCommand(EFFECT_CMD_SET_PARAM, cmdSize, p, &replySize, &reply);
+        std::unique_lock<std::mutex> lock(mMutex);
+        (void)mContext.HandleCommand(EFFECT_CMD_SET_PARAM,
+                                     static_cast<uint32_t>(cmdSize),
+                                     const_cast<effect_param_t*>(p),
+                                     &replySize, &reply);
         return ndk::ScopedAStatus::ok();
     }
 
@@ -291,7 +312,7 @@ private:
         auto* reply = reinterpret_cast<effect_param_t*>(outBytes.data());
         uint32_t replySize = static_cast<uint32_t>(kReplyBuf);
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            std::unique_lock<std::mutex> lock(mMutex);
             (void)mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
                                    static_cast<uint32_t>(idBytes.size()),
                                    cmd, &replySize, reply);
@@ -311,58 +332,61 @@ private:
     // --- worker thread ---
 
     void startWorkerLocked() {
-        mWorkerExit.store(false, std::memory_order_relaxed);
-        mWorkerThread = std::thread([this] { workerLoop(); });
+        // std::jthread: RAII join + cooperative stop via stop_token; replaces
+        // std::thread + std::atomic<bool> mWorkerExit.
+        mWorkerThread = std::jthread([this](std::stop_token st) {
+            workerLoop(std::move(st));
+        });
     }
 
-    void stopWorkerLocked() {
-        mWorkerExit.store(true, std::memory_order_relaxed);
-        if (mInputMQ) {
-            // Wake the worker if it is blocked on the event flag
-            auto* ef = mInputMQ->getEventFlagWord();
-            if (ef) ef->fetch_or(1u, std::memory_order_relaxed);
+    // Must be called with mMutex held via a std::unique_lock so we can safely
+    // release the lock before joining (avoids deadlock with the worker).
+    void stopWorkerLocked(std::unique_lock<std::mutex>& lock) {
+        if (!mWorkerThread.joinable()) return;
+
+        // Signal cooperative stop; wake the worker if blocked on EventFlag.
+        mWorkerThread.request_stop();
+        if (mEventFlag) {
+            // Unconditionally set any bit so the EventFlag::wait() returns.
+            reinterpret_cast<std::atomic<uint32_t>*>(
+                mInputMQ->getEventFlagWord())->fetch_or(1u, std::memory_order_release);
         }
-        if (mWorkerThread.joinable()) {
-            // Release the mutex while joining to avoid deadlock
-            mMutex.unlock();
-            mWorkerThread.join();
-            mMutex.lock();
-        }
+
+        // Release mutex before joining: the worker may need the mutex to finish.
+        lock.unlock();
+        mWorkerThread.join();
+        lock.lock();
     }
 
-    void workerLoop() {
+    void workerLoop(std::stop_token stopToken) {
         ALOGD("worker: started");
-        constexpr size_t kChannels  = 2;
-        constexpr size_t kFrameSize = kChannels * sizeof(float);
-        std::vector<float> buf;
+        constexpr size_t kChannels = 2;
 
-        while (!mWorkerExit.load(std::memory_order_relaxed)) {
-            // Wait for data (timeout 100 ms)
-            auto* ef = mInputMQ->getEventFlagWord();
-            if (ef) {
+        while (!stopToken.stop_requested()) {
+            // mEventFlag was created once in open(); no system call here.
+            if (mEventFlag) {
                 uint32_t bits = 0;
-                android::hardware::EventFlag* flag = nullptr;
-                if (android::hardware::EventFlag::createEventFlag(ef, &flag) == 0 && flag) {
-                    flag->wait(/*bitmask=*/0xFFFFFFFF, &bits, /*timeoutNs=*/100'000'000ULL,
-                               /*retry=*/true);
-                    android::hardware::EventFlag::deleteEventFlag(&flag);
-                }
+                mEventFlag->wait(/*bitmask=*/0xFFFFFFFF, &bits,
+                                 /*timeoutNs=*/100'000'000ULL, /*retry=*/true);
             }
-            if (mWorkerExit.load(std::memory_order_relaxed)) break;
+
+            if (stopToken.stop_requested()) break;
 
             const size_t avail = mInputMQ->availableToRead();
             if (avail == 0) continue;
 
-            buf.resize(avail);
-            if (!mInputMQ->read(buf.data(), avail)) continue;
+            // mWorkerBuf was reserve()d in open() to mFrameCount*4; resize never
+            // reallocates as long as avail stays within that capacity.
+            mWorkerBuf.resize(avail);
+            if (!mInputMQ->read(mWorkerBuf.data(), avail)) continue;
 
             const size_t frames = avail / kChannels;
-            audio_buffer_t inBuf  = { .frame_count = frames, .f32 = buf.data() };
-            audio_buffer_t outBuf = { .frame_count = frames, .f32 = buf.data() };
+            audio_buffer_t inBuf  = { .frame_count = frames, .f32 = mWorkerBuf.data() };
+            audio_buffer_t outBuf = { .frame_count = frames, .f32 = mWorkerBuf.data() };
             (void)mContext.Process(&inBuf, &outBuf);
 
             // Write processed samples to output MQ
-            mOutputMQ->write(buf.data(), avail);
+            mOutputMQ->write(mWorkerBuf.data(), avail);
 
             // Signal status
             IEffect::Status st = { STATUS_OK, static_cast<int32_t>(avail),
@@ -372,14 +396,26 @@ private:
         ALOGD("worker: stopped");
     }
 
-    // --- close helper (idempotent) ---
-    void closeInternal() {
-        std::lock_guard<std::mutex> lock(mMutex);
-        if (mState == State::INIT) return;
-        stopWorkerLocked();
+    // --- close / cleanup helpers ---
+
+    void cleanupQueuesLocked() {
+        // Destroy the EventFlag that was created in open().
+        if (mEventFlag) {
+            android::hardware::EventFlag::deleteEventFlag(&mEventFlag);
+            mEventFlag = nullptr;
+        }
+        mWorkerBuf.clear();
+        mWorkerBuf.shrink_to_fit();
         mInputMQ.reset();
         mOutputMQ.reset();
         mStatusMQ.reset();
+    }
+
+    void closeInternal() {
+        std::unique_lock<std::mutex> lock(mMutex);
+        if (mState == State::INIT) return;
+        stopWorkerLocked(lock);
+        cleanupQueuesLocked();
         mState = State::INIT;
     }
 
@@ -393,8 +429,14 @@ private:
     std::unique_ptr<DataMQ>   mOutputMQ;
     std::unique_ptr<StatusMQ> mStatusMQ;
 
-    std::thread      mWorkerThread;
-    std::atomic<bool> mWorkerExit { false };
+    // Persistent EventFlag: created once in open(), deleted in cleanupQueuesLocked().
+    android::hardware::EventFlag* mEventFlag { nullptr };
+
+    // Pre-allocated RT processing buffer; capacity set in open(), never reallocated.
+    std::vector<float> mWorkerBuf;
+
+    // jthread: auto-joins on destruction; stop_token replaces mWorkerExit atomic.
+    std::jthread mWorkerThread;
 
     ViperContext mContext;
 };
@@ -425,9 +467,9 @@ const Descriptor ViPEREffect::kDescriptor = {
 // ---------------------------------------------------------------------------
 // C entry points resolved by EffectFactory via dlsym
 // ---------------------------------------------------------------------------
-#define EFFECT_EXPORT __attribute__((visibility("default")))
+extern "C" {
 
-extern "C" EFFECT_EXPORT binder_exception_t createEffect(
+[[gnu::visibility("default")]] binder_exception_t createEffect(
     const AudioUuid* in_impl_uuid,
     std::shared_ptr<aidl::android::hardware::audio::effect::IEffect>* instanceSpp
 ) {
@@ -441,7 +483,7 @@ extern "C" EFFECT_EXPORT binder_exception_t createEffect(
     return EX_NONE;
 }
 
-extern "C" EFFECT_EXPORT binder_exception_t queryEffect(
+[[gnu::visibility("default")]] binder_exception_t queryEffect(
     const AudioUuid* in_impl_uuid,
     Descriptor* _aidl_return
 ) {
@@ -453,9 +495,11 @@ extern "C" EFFECT_EXPORT binder_exception_t queryEffect(
     return EX_NONE;
 }
 
-extern "C" EFFECT_EXPORT binder_exception_t destroyEffect(
+[[gnu::visibility("default")]] binder_exception_t destroyEffect(
     const std::shared_ptr<aidl::android::hardware::audio::effect::IEffect>& /*instanceSp*/
 ) {
     // SharedRefBase handles lifetime; nothing to do
     return EX_NONE;
 }
+
+} // extern "C"

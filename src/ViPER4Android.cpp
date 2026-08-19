@@ -2,15 +2,36 @@
 #include "essential.h"
 #include "log.h"
 #include "viper/constants.h"
+
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <format>
 #include <memory>
 #include <new>
+#include <type_traits>
 
 namespace {
 
+// Forward-declare the interface table so ViperHandle can reference it.
+extern const effect_interface_s kViperInterface;
+
 struct ViperHandle {
-    const effect_interface_s *interface{}; // Always keep as first member
-    std::unique_ptr<ViperContext> context;
+    // ABI requirement: interface pointer MUST be first member at offset 0 so
+    // that effect_handle_t (a void*) can be safely reinterpret_cast<>d both ways.
+    const effect_interface_s *interface = &kViperInterface;
+
+    // Embed ViperContext directly — eliminates the second heap allocation and
+    // the extra pointer indirection on every audio-processing call.
+    ViperContext context{};
 };
+
+// Verify the C-ABI layout promise at compile time.
+// Note: ViperContext contains std::atomic / std::vector / std::string members,
+// so ViperHandle is NOT standard-layout; we only assert what actually matters
+// for the ABI: that the interface pointer sits at byte offset 0.
+static_assert(offsetof(ViperHandle, interface) == 0,
+              "interface must be the first member of ViperHandle (C ABI requirement)");
 
 constexpr effect_descriptor_t kViperDescriptor = {
     .type = *EFFECT_UUID_NULL,
@@ -18,23 +39,32 @@ constexpr effect_descriptor_t kViperDescriptor = {
     .api_version = EFFECT_CONTROL_API_VERSION,
     .flags = EFFECT_FLAG_OUTPUT_DIRECT | EFFECT_FLAG_INPUT_DIRECT
              | EFFECT_FLAG_INSERT_LAST | EFFECT_FLAG_TYPE_INSERT,
-    .cpu_load = 8, // In 0.1 MIPS units as estimated on an ARM9E core (ARMv5TE) with 0 WS
-    .memory_usage = 1, // In KB and includes only dynamically allocated memory
+    .cpu_load = 8,      // 0.1 MIPS units on ARM9E/ARMv5TE at 0 wait states
+    .memory_usage = 1,  // KB, dynamic allocations only
     .name = VIPER_NAME,
     .implementor = VIPER_AUTHORS
 };
 
-[[nodiscard]] bool IsMatchingUuid(const effect_uuid_t *uuid) {
+[[nodiscard]] constexpr bool IsMatchingUuid(const effect_uuid_t *uuid) noexcept {
     return uuid != nullptr && *uuid == kViperDescriptor.uuid;
+}
+
+// Format a UUID into canonical 8-4-4-4-12 hex string for log messages.
+[[nodiscard]] std::string FormatUuid(const effect_uuid_t &u) {
+    return std::format(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        u.time_low, u.time_mid, u.time_hi_and_version, u.clock_seq,
+        u.node[0], u.node[1], u.node[2], u.node[3], u.node[4], u.node[5]
+    );
 }
 
 int32_t ViperInterfaceProcess(
     effect_handle_t self, audio_buffer_t *in_buffer, audio_buffer_t *out_buffer
-) {
+) noexcept {
     const auto viper_handle = reinterpret_cast<ViperHandle *>(self);
     if (viper_handle == nullptr) return -EINVAL;
 
-    return viper_handle->context->Process(in_buffer, out_buffer);
+    return viper_handle->context.Process(in_buffer, out_buffer);
 }
 
 int32_t ViperInterfaceCommand(
@@ -44,16 +74,16 @@ int32_t ViperInterfaceCommand(
     const void *cmd_data,
     uint32_t *reply_size,
     void *reply_data
-) {
+) noexcept {
     const auto viper_handle = reinterpret_cast<ViperHandle *>(self);
     if (viper_handle == nullptr) return -EINVAL;
 
-    return viper_handle->context->HandleCommand(
+    return viper_handle->context.HandleCommand(
         cmd_code, cmd_size, cmd_data, reply_size, reply_data
     );
 }
 
-int32_t ViperInterfaceGetDescriptor(effect_handle_t self, effect_descriptor_t *descriptor) {
+int32_t ViperInterfaceGetDescriptor(effect_handle_t /*self*/, effect_descriptor_t *descriptor) noexcept {
     if (descriptor == nullptr) return -EINVAL;
     *descriptor = kViperDescriptor;
     return 0;
@@ -67,55 +97,40 @@ constexpr effect_interface_s kViperInterface = {
 
 int32_t ViperLibraryCreate(
     const effect_uuid_t *uuid, int32_t session_id, int32_t io_id, effect_handle_t *handle
-) {
+) noexcept {
     if (uuid == nullptr || handle == nullptr) return -EINVAL;
+
     if (!IsMatchingUuid(uuid)) {
         VIPER_LOGE(
-            "ViperLibraryCreate: uuid mismatch (session=%d, io=%d, "
-            "requested=%08x-%04x-%04x-%04x-%02x%02x%02x%02x%02x%02x)",
-            session_id,
-            io_id,
-            uuid->time_low,
-            uuid->time_mid,
-            uuid->time_hi_and_version,
-            uuid->clock_seq,
-            uuid->node[0],
-            uuid->node[1],
-            uuid->node[2],
-            uuid->node[3],
-            uuid->node[4],
-            uuid->node[5]
+            "ViperLibraryCreate: uuid mismatch (session=%d, io=%d, requested=%s)",
+            session_id, io_id, FormatUuid(*uuid).c_str()
         );
         return -ENOENT;
     }
 
-    // v4a_re builds with -fno-exceptions: use nothrow allocation instead of try/catch.
+    // Single allocation: ViperHandle embeds ViperContext (no second heap alloc).
+    // v4a_re builds with -fno-exceptions: use nothrow new instead of try/catch.
     std::unique_ptr<ViperHandle> viper_handle{new (std::nothrow) ViperHandle()};
-    if (viper_handle == nullptr) return -ENOMEM;
-
-    viper_handle->interface = &kViperInterface;
-    viper_handle->context.reset(new (std::nothrow) ViperContext());
-    if (viper_handle->context == nullptr) return -ENOMEM;
+    if (!viper_handle) return -ENOMEM;
 
     VIPER_LOGI(
         "ViperLibraryCreate: session_id=%d, io_id=%d, context=%p",
-        session_id,
-        io_id,
-        viper_handle->context.get()
+        session_id, io_id, static_cast<void *>(&viper_handle->context)
     );
+
     *handle = reinterpret_cast<effect_handle_t>(viper_handle.release());
     return 0;
 }
 
-int32_t ViperLibraryRelease(effect_handle_t handle) {
+int32_t ViperLibraryRelease(effect_handle_t handle) noexcept {
     const std::unique_ptr<ViperHandle> owned{reinterpret_cast<ViperHandle *>(handle)};
-    if (owned == nullptr) return -EINVAL;
+    if (!owned) return -EINVAL;
 
-    VIPER_LOGI("ViperLibraryRelease: context=%p", owned->context.get());
+    VIPER_LOGI("ViperLibraryRelease: context=%p", static_cast<void *>(&owned->context));
     return 0;
 }
 
-int32_t ViperLibraryGetDescriptor(const effect_uuid_t *uuid, effect_descriptor_t *descriptor) {
+int32_t ViperLibraryGetDescriptor(const effect_uuid_t *uuid, effect_descriptor_t *descriptor) noexcept {
     if (uuid == nullptr || descriptor == nullptr) return -EINVAL;
     if (!IsMatchingUuid(uuid)) {
         VIPER_LOGE("ViperLibraryGetDescriptor: uuid mismatch");

@@ -3,8 +3,10 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 // C++23 modernized: inline constexpr replaces macros, C++ headers, defaulted comparisons
 
@@ -17,17 +19,19 @@ typedef struct effect_uuid_s {
     uint16_t clock_seq;
     uint8_t node[6];
 
+    // operator<=> = default automatically synthesizes operator== in C++20/23.
     constexpr auto operator<=>(const effect_uuid_s &) const noexcept = default;
-    constexpr bool operator==(const effect_uuid_s &) const noexcept = default;
 } effect_uuid_t;
+
+static_assert(sizeof(effect_uuid_t) == 16, "effect_uuid_t must be 16 bytes for Android HAL ABI");
 
 // Maximum length of character strings in structures defines by this API.
 inline constexpr size_t EFFECT_STRING_LEN_MAX = 64;
 
 // NULL UUID definition (matches SL_IID_NULL_)
-#define EFFECT_UUID_INITIALIZER                                                          \
-    {0xec7178ec, 0xe5e1, 0x4432, 0xa3f4, {0x46, 0x57, 0xe6, 0x79, 0x52, 0x10}}
-inline constexpr effect_uuid_t EFFECT_UUID_NULL_ = EFFECT_UUID_INITIALIZER;
+inline constexpr effect_uuid_t EFFECT_UUID_NULL_ = {
+    0xec7178ec, 0xe5e1, 0x4432, 0xa3f4, {0x46, 0x57, 0xe6, 0x79, 0x52, 0x10}
+};
 inline constexpr const effect_uuid_t *EFFECT_UUID_NULL = &EFFECT_UUID_NULL_;
 inline constexpr std::string_view EFFECT_UUID_NULL_STR = "ec7178ec-e5e1-4432-a3f4-4657e6795210";
 
@@ -281,7 +285,7 @@ struct effect_interface_s {
     ////////////////////////////////////////////////////////////////////////////////
     int32_t (*process)(
         effect_handle_t self, audio_buffer_t *in_buffer, audio_buffer_t *out_buffer
-    );
+    ) noexcept;
     ////////////////////////////////////////////////////////////////////////////////
     //
     //    Function:       command
@@ -319,7 +323,7 @@ struct effect_interface_s {
         const void *cmd_data,
         uint32_t *reply_size,
         void *reply_data
-    );
+    ) noexcept;
     ////////////////////////////////////////////////////////////////////////////////
     //
     //    Function:        get_descriptor
@@ -339,7 +343,7 @@ struct effect_interface_s {
     //        *pDescriptor:     updated with the effect descriptor.
     //
     ////////////////////////////////////////////////////////////////////////////////
-    int32_t (*get_descriptor)(effect_handle_t self, effect_descriptor_t *descriptor);
+    int32_t (*get_descriptor)(effect_handle_t self, effect_descriptor_t *descriptor) noexcept;
     ////////////////////////////////////////////////////////////////////////////////
     //
     //    Function:       process_reverse
@@ -370,7 +374,7 @@ struct effect_interface_s {
     ////////////////////////////////////////////////////////////////////////////////
     int32_t (*process_reverse)(
         effect_handle_t self, audio_buffer_t *in_buffer, audio_buffer_t *out_buffer
-    );
+    ) noexcept;
 };
 
 //
@@ -379,7 +383,7 @@ struct effect_interface_s {
 // Kept as a plain (unscoped) enum, not `enum class`, because downstream code
 // (ViperContext.cpp) relies on bare names (e.g. EFFECT_CMD_INIT) in switch
 // statements, and this enum crosses the Android effect HAL ABI boundary.
-enum effect_command_e {
+enum effect_command_e : uint32_t {
     EFFECT_CMD_INIT,               // initialize effect engine
     EFFECT_CMD_SET_CONFIG,         // configure effect engine (see effect_config_t)
     EFFECT_CMD_RESET,              // reset effect engine
@@ -807,10 +811,36 @@ typedef struct effect_config_s {
 //  +-----------+
 
 typedef struct effect_param_s {
-    int32_t status; // Transaction status (unused for command, used for reply)
-    uint32_t psize; // Parameter size
-    uint32_t vsize; // Value size
-    char data[];    // Start of Parameter + Value data
+    int32_t  status; // Transaction status (unused for command, used for reply)
+    uint32_t psize;  // Parameter size
+    uint32_t vsize;  // Value size
+    char     data[]; // Start of Parameter + Value data
+
+    // Returns the byte offset to the value field: Align4(psize).
+    // Centralises the alignment calculation so callers never reimplement it.
+    [[nodiscard]] constexpr uint32_t ValueOffset() const noexcept {
+        return (psize + 3U) & ~3U;
+    }
+
+    // Returns the total serialised size: header + aligned param + value.
+    [[nodiscard]] constexpr size_t TotalSize() const noexcept {
+        return sizeof(effect_param_s) + ValueOffset() + vsize;
+    }
+
+    // Safe read-only view of the parameter bytes (length = psize).
+    [[nodiscard]] std::span<const std::byte> ParamBytes() const noexcept {
+        return {reinterpret_cast<const std::byte *>(data), psize};
+    }
+
+    // Safe mutable view of the value bytes (length = vsize, at Align4(psize) offset).
+    [[nodiscard]] std::span<std::byte> ValueBytes() noexcept {
+        return {reinterpret_cast<std::byte *>(data + ValueOffset()), vsize};
+    }
+
+    // Safe read-only view of the value bytes.
+    [[nodiscard]] std::span<const std::byte> ValueBytes() const noexcept {
+        return {reinterpret_cast<const std::byte *>(data + ValueOffset()), vsize};
+    }
 } effect_param_t;
 
 /////////////////////////////////////////////////
@@ -872,7 +902,7 @@ typedef struct audio_effect_library_s {
         int32_t session_id,
         int32_t io_id,
         effect_handle_t *handle
-    );
+    ) noexcept;
 
     ////////////////////////////////////////////////////////////////////////////////
     //
@@ -891,7 +921,7 @@ typedef struct audio_effect_library_s {
     //                          -EINVAL     invalid interface handle
     //
     ////////////////////////////////////////////////////////////////////////////////
-    int32_t (*release_effect)(effect_handle_t handle);
+    int32_t (*release_effect)(effect_handle_t handle) noexcept;
 
     ////////////////////////////////////////////////////////////////////////////////
     //
@@ -911,7 +941,7 @@ typedef struct audio_effect_library_s {
     //        *pDescriptor:     updated with the effect descriptor.
     //
     ////////////////////////////////////////////////////////////////////////////////
-    int32_t (*get_descriptor)(const effect_uuid_t *uuid, effect_descriptor_t *descriptor);
+    int32_t (*get_descriptor)(const effect_uuid_t *uuid, effect_descriptor_t *descriptor) noexcept;
 } audio_effect_library_t;
 
 // Name of the hal_module_info
@@ -922,17 +952,18 @@ typedef struct audio_effect_library_s {
 
 // Values for bit field "mask" in buffer_config_t. If a bit is set, the corresponding field
 // in buffer_config_t must be taken into account when executing the EFFECT_CMD_SET_CONFIG command
-#define EFFECT_CONFIG_BUFFER 0x0001   // buffer field must be taken into account
-#define EFFECT_CONFIG_SMP_RATE 0x0002 // samplingRate field must be taken into account
-#define EFFECT_CONFIG_CHANNELS 0x0004 // channels field must be taken into account
-#define EFFECT_CONFIG_FORMAT 0x0008   // format field must be taken into account
-#define EFFECT_CONFIG_ACC_MODE 0x0010 // accessMode field must be taken into account
-#define EFFECT_CONFIG_PROVIDER 0x0020 // bufferProvider field must be taken into account
-#define EFFECT_CONFIG_ALL                                                                \
-    (EFFECT_CONFIG_BUFFER | EFFECT_CONFIG_SMP_RATE | EFFECT_CONFIG_CHANNELS              \
-     | EFFECT_CONFIG_FORMAT | EFFECT_CONFIG_ACC_MODE | EFFECT_CONFIG_PROVIDER)
+// Values for bit field "mask" in buffer_config_t (uint16_t).
+inline constexpr uint16_t EFFECT_CONFIG_BUFFER   = 0x0001; // buffer field
+inline constexpr uint16_t EFFECT_CONFIG_SMP_RATE = 0x0002; // samplingRate field
+inline constexpr uint16_t EFFECT_CONFIG_CHANNELS = 0x0004; // channels field
+inline constexpr uint16_t EFFECT_CONFIG_FORMAT   = 0x0008; // format field
+inline constexpr uint16_t EFFECT_CONFIG_ACC_MODE = 0x0010; // accessMode field
+inline constexpr uint16_t EFFECT_CONFIG_PROVIDER = 0x0020; // bufferProvider field
+inline constexpr uint16_t EFFECT_CONFIG_ALL      = EFFECT_CONFIG_BUFFER | EFFECT_CONFIG_SMP_RATE
+                                                 | EFFECT_CONFIG_CHANNELS | EFFECT_CONFIG_FORMAT
+                                                 | EFFECT_CONFIG_ACC_MODE | EFFECT_CONFIG_PROVIDER;
 
-typedef enum {
+typedef enum : uint32_t {
     AUDIO_FORMAT_INVALID = 0xFFFFFFFFu,
     AUDIO_FORMAT_DEFAULT = 0,
     AUDIO_FORMAT_PCM = 0x00000000u,
@@ -1041,7 +1072,7 @@ typedef enum {
     AUDIO_FORMAT_MAT_2_1 = 0x24000003u,           // (MAT | MAT_SUB_2_1)
 } audio_format_t;
 
-enum {
+enum : uint32_t {
     AUDIO_CHANNEL_REPRESENTATION_POSITION = 0x0u,
     AUDIO_CHANNEL_REPRESENTATION_INDEX = 0x2u,
     AUDIO_CHANNEL_NONE = 0x0u,

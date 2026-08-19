@@ -27,10 +27,6 @@ constexpr int32_t kParamGetDriverVersionCode = 6;
 constexpr int32_t kParamGetDriverVersionName = 7;
 constexpr int32_t kParamGetArchitecture = 8;
 
-// Rounds a size up to the next 32 bit boundary, matching the effect_param_t
-// value-offset convention documented in essential.h.
-constexpr uint32_t Align4(uint32_t size) noexcept { return (size + 3U) & ~3U; }
-
 // RAII guard that flushes denormals to zero for the lifetime of the object,
 // restoring the original FPU/SIMD control state on destruction. Supports
 // AArch64, ARMv7 (VFP), and x86/x86_64 (SSE); a no-op elsewhere.
@@ -66,14 +62,14 @@ struct ScopedDenormalFlusher {};
 #endif
 
 template <std::integral T>
-void PcmToFloat(std::span<float> dst, std::span<const T> src) {
+void PcmToFloat(std::span<float> dst, std::span<const T> src) noexcept {
     constexpr float inv_scale = 1.0f / (static_cast<float>(std::numeric_limits<T>::max()) + 1.0f);
     for (auto [d, s] : std::views::zip(dst, src)) {
         d = std::clamp(static_cast<float>(s) * inv_scale, -1.0f, 1.0f);
     }
 }
 
-void FloatToFloat(std::span<float> dst, std::span<const float> src, bool accumulate) {
+void FloatToFloat(std::span<float> dst, std::span<const float> src, bool accumulate) noexcept {
     if (accumulate) {
         for (auto [d, s] : std::views::zip(dst, src)) {
             d = std::clamp(d + s, -1.0f, 1.0f);
@@ -84,12 +80,15 @@ void FloatToFloat(std::span<float> dst, std::span<const float> src, bool accumul
 }
 
 template <std::integral T, std::integral U>
-void FloatToPcm(std::span<T> dst, std::span<const float> src, bool accumulate) {
+void FloatToPcm(std::span<T> dst, std::span<const float> src, bool accumulate) noexcept {
     constexpr T max_val = std::numeric_limits<T>::max();
     constexpr T min_val = std::numeric_limits<T>::min();
 
     for (auto [d, s] : std::views::zip(dst, src)) {
-        const T pcm = static_cast<T>(std::lrintf(s * static_cast<float>(max_val)));
+        // Pre-clamp to [-1, 1] before scaling: lrintf(s * max_val) is UB when
+        // s * max_val overflows the integer range (e.g. s=2.5f from DSP gain).
+        const float clamped = std::clamp(s, -1.0f, 1.0f);
+        const T pcm = static_cast<T>(std::lrintf(clamped * static_cast<float>(max_val)));
         if (accumulate) {
             const U temp = static_cast<U>(d) + pcm;
             d = static_cast<T>(
@@ -101,7 +100,7 @@ void FloatToPcm(std::span<T> dst, std::span<const float> src, bool accumulate) {
     }
 }
 
-audio_buffer_t *GetBuffer(buffer_config_t *config, audio_buffer_t *buffer) {
+audio_buffer_t *GetBuffer(buffer_config_t *config, audio_buffer_t *buffer) noexcept {
     if (buffer != nullptr) return buffer;
     if (config->mask & EFFECT_CONFIG_BUFFER) return &config->buffer;
     // EFFECT_CONFIG_PROVIDER not implemented, it's not used by any known effect
@@ -112,10 +111,12 @@ audio_buffer_t *GetBuffer(buffer_config_t *config, audio_buffer_t *buffer) {
 
 ViperContext::ViperContext() {
     VIPER_LOGI("ViperContext created");
-    buffer_.reserve(kDefaultMaxFrames * 2);
+    // Pre-allocate to maximum capacity so Process() never calls resize() on the RT thread.
+    buffer_.resize(kDefaultMaxFrames * 2, 0.0f);
+    buffer_frame_count_ = kDefaultMaxFrames;
 }
 
-void ViperContext::CopyBufferConfig(buffer_config_t &dest, const buffer_config_t &src) {
+void ViperContext::CopyBufferConfig(buffer_config_t &dest, const buffer_config_t &src) noexcept {
     if (src.mask & EFFECT_CONFIG_BUFFER) {
         dest.buffer = src.buffer;
     }
@@ -242,19 +243,24 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
 
 std::expected<void, int32_t> ViperContext::HandleSetParam(
     uint32_t cmd_size, const effect_param_t *cmd_param, void *reply_data
-) {
+) noexcept {
     constexpr uint32_t min_cmd_size = sizeof(effect_param_t) + sizeof(int32_t);
     if (cmd_size < min_cmd_size) {
         return std::unexpected(-EINVAL);
     }
 
-    // The value offset of an effect parameter is computed by rounding up
-    // the parameter size to the next 32 bit alignment.
-    const uint32_t offset = Align4(cmd_param->psize);
+    // Delegate alignment to the canonical method on effect_param_t (essential.h).
+    const uint32_t offset = cmd_param->ValueOffset();
+
+    // Security: validate that the buffer holds the full param+value payload before
+    // any read_int32/memcpy into cmd_param->data, preventing out-of-bounds reads.
+    if (cmd_size < sizeof(effect_param_t) + offset + cmd_param->vsize) {
+        return std::unexpected(-EINVAL);
+    }
 
     *static_cast<int32_t *>(reply_data) = 0;
 
-    auto read_int32 = [&](uint32_t byte_offset) {
+    auto read_int32 = [&](uint32_t byte_offset) noexcept {
         int32_t value;
         std::memcpy(&value, cmd_param->data + byte_offset, sizeof(int32_t));
         return value;
@@ -314,26 +320,27 @@ std::expected<uint32_t, int32_t> ViperContext::HandleGetParam(
     const effect_param_t *cmd_param,
     effect_param_t *reply_param,
     uint32_t reply_size_limit
-) {
+) noexcept {
     if (cmd_size < sizeof(effect_param_t) + cmd_param->psize
         || reply_size_limit < sizeof(effect_param_t) + cmd_param->psize) {
         return std::unexpected(-EINVAL);
     }
 
-    // The value offset of an effect parameter is computed by rounding up
-    // the parameter size to the next 32 bit alignment.
-    const uint32_t offset = Align4(cmd_param->psize);
+    // Delegate alignment to the canonical method on effect_param_t (essential.h).
+    const uint32_t offset = cmd_param->ValueOffset();
 
     std::memcpy(reply_param, cmd_param, sizeof(effect_param_t) + cmd_param->psize);
 
     uint32_t query;
     std::memcpy(&query, cmd_param->data, sizeof(uint32_t));
 
-    auto write_value = [&](const void *value, uint32_t vsize) -> uint32_t {
+    auto write_value = [&](const void *value, uint32_t vsize) noexcept -> uint32_t {
         reply_param->status = 0;
         reply_param->vsize = vsize;
         std::memcpy(reply_param->data + offset, value, vsize);
-        return sizeof(effect_param_t) + reply_param->psize + offset + reply_param->vsize;
+        // Correct HAL size: effect_param_t header + Align4(psize) + vsize.
+        // offset == Align4(psize), so do NOT add reply_param->psize again.
+        return sizeof(effect_param_t) + offset + reply_param->vsize;
     };
 
     switch (query) {
@@ -383,10 +390,10 @@ int32_t ViperContext::HandleCommand(
     const void *cmd_data,
     uint32_t *reply_size,
     void *reply_data
-) {
+) noexcept {
     const uint32_t rs = reply_size == nullptr ? 0 : *reply_size;
 
-    auto write_status_reply = [&](int32_t status) {
+    auto write_status_reply = [&](int32_t status) noexcept {
         std::memcpy(reply_data, &status, sizeof(int32_t));
         return 0;
     };
@@ -475,7 +482,7 @@ int32_t ViperContext::HandleCommand(
     }
 }
 
-int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer) {
+int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer) noexcept {
     if (disable_reason_.load(std::memory_order_relaxed) != DisableReason::NONE) {
         return -EINVAL;
     }
@@ -512,9 +519,10 @@ int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buf
 
     const size_t frame_count = in_buffer->frame_count;
     const size_t sample_count = frame_count * 2;
-    if (frame_count > buffer_frame_count_) {
-        buffer_.resize(sample_count);
-        buffer_frame_count_ = frame_count;
+    // Never allocate on the RT audio thread. buffer_ is pre-sized in the constructor
+    // and may grow in HandleSetConfig (non-RT path). Reject oversized frames here.
+    if (sample_count > buffer_.size()) {
+        return -EINVAL;
     }
 
     switch (config_.input_cfg.format) {
