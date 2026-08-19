@@ -61,7 +61,9 @@ constexpr effect_descriptor_t kViperDescriptor = {
 int32_t ViperInterfaceProcess(
     effect_handle_t self, audio_buffer_t *in_buffer, audio_buffer_t *out_buffer
 ) noexcept {
-    const auto viper_handle = reinterpret_cast<ViperHandle *>(self);
+    // effect_handle_t is struct effect_interface_s**; the actual object is ViperHandle.
+    // Round-trip through void* is the well-defined way to recover the original pointer.
+    const auto viper_handle = static_cast<ViperHandle *>(static_cast<void *>(self));
     if (viper_handle == nullptr) return -EINVAL;
 
     return viper_handle->context.Process(in_buffer, out_buffer);
@@ -75,7 +77,7 @@ int32_t ViperInterfaceCommand(
     uint32_t *reply_size,
     void *reply_data
 ) noexcept {
-    const auto viper_handle = reinterpret_cast<ViperHandle *>(self);
+    const auto viper_handle = static_cast<ViperHandle *>(static_cast<void *>(self));
     if (viper_handle == nullptr) return -EINVAL;
 
     return viper_handle->context.HandleCommand(
@@ -118,12 +120,12 @@ int32_t ViperLibraryCreate(
         session_id, io_id, static_cast<void *>(&viper_handle->context)
     );
 
-    *handle = reinterpret_cast<effect_handle_t>(viper_handle.release());
+    *handle = static_cast<effect_handle_t>(static_cast<void *>(viper_handle.release()));
     return 0;
 }
 
 int32_t ViperLibraryRelease(effect_handle_t handle) noexcept {
-    const std::unique_ptr<ViperHandle> owned{reinterpret_cast<ViperHandle *>(handle)};
+    const std::unique_ptr<ViperHandle> owned{static_cast<ViperHandle *>(static_cast<void *>(handle))};
     if (!owned) return -EINVAL;
 
     VIPER_LOGI("ViperLibraryRelease: context=%p", static_cast<void *>(&owned->context));

@@ -38,6 +38,10 @@ struct ScopedDenormalFlusher {
         asm volatile("msr fpcr, %0" ::"r"(orig_fpcr | (1ULL << 24)));
     }
     ~ScopedDenormalFlusher() noexcept { asm volatile("msr fpcr, %0" ::"r"(orig_fpcr)); }
+    ScopedDenormalFlusher(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher &operator=(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher(ScopedDenormalFlusher &&) = delete;
+    ScopedDenormalFlusher &operator=(ScopedDenormalFlusher &&) = delete;
 };
 #elif defined(__arm__)
 struct ScopedDenormalFlusher {
@@ -47,6 +51,10 @@ struct ScopedDenormalFlusher {
         asm volatile("vmsr fpscr, %0" ::"r"(orig_fpscr | (1U << 24)));
     }
     ~ScopedDenormalFlusher() noexcept { asm volatile("vmsr fpscr, %0" ::"r"(orig_fpscr)); }
+    ScopedDenormalFlusher(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher &operator=(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher(ScopedDenormalFlusher &&) = delete;
+    ScopedDenormalFlusher &operator=(ScopedDenormalFlusher &&) = delete;
 };
 #elif defined(__x86_64__) || defined(_M_X64)
 struct ScopedDenormalFlusher {
@@ -56,9 +64,20 @@ struct ScopedDenormalFlusher {
         _mm_setcsr(orig_mxcsr | 0x8040); // FTZ | DAZ
     }
     ~ScopedDenormalFlusher() noexcept { _mm_setcsr(orig_mxcsr); }
+    ScopedDenormalFlusher(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher &operator=(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher(ScopedDenormalFlusher &&) = delete;
+    ScopedDenormalFlusher &operator=(ScopedDenormalFlusher &&) = delete;
 };
 #else
-struct ScopedDenormalFlusher {};
+struct ScopedDenormalFlusher {
+    ScopedDenormalFlusher() = default;
+    ~ScopedDenormalFlusher() = default;
+    ScopedDenormalFlusher(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher &operator=(const ScopedDenormalFlusher &) = delete;
+    ScopedDenormalFlusher(ScopedDenormalFlusher &&) = delete;
+    ScopedDenormalFlusher &operator=(ScopedDenormalFlusher &&) = delete;
+};
 #endif
 
 template <std::integral T>
@@ -244,8 +263,8 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
 std::expected<void, int32_t> ViperContext::HandleSetParam(
     uint32_t cmd_size, const effect_param_t *cmd_param, void *reply_data
 ) noexcept {
-    constexpr uint32_t min_cmd_size = sizeof(effect_param_t) + sizeof(int32_t);
-    if (cmd_size < min_cmd_size) {
+    if (constexpr uint32_t min_cmd_size = sizeof(effect_param_t) + sizeof(int32_t);
+        cmd_size < min_cmd_size) {
         return std::unexpected(-EINVAL);
     }
 
@@ -293,8 +312,11 @@ std::expected<void, int32_t> ViperContext::HandleSetParam(
         case 1024: {
             uint32_t arr_size;
             std::memcpy(&arr_size, cmd_param->data + offset, sizeof(uint32_t));
-            auto *arr = reinterpret_cast<signed char *>(
-                const_cast<char *>(cmd_param->data) + offset + sizeof(uint32_t)
+            // Route through void* to convert between character types without
+            // reinterpret_cast; const_cast is required because DispatchRawParam
+            // takes signed char* (non-const) but the data buffer is read-only here.
+            auto *arr = static_cast<signed char *>(
+                static_cast<void *>(const_cast<char *>(cmd_param->data) + offset + sizeof(uint32_t))
             );
             viper_.DispatchRawParam(param, 0, 0, 0, arr_size, arr);
             return {};
@@ -303,8 +325,8 @@ std::expected<void, int32_t> ViperContext::HandleSetParam(
             const int32_t value1 = read_int32(offset);
             uint32_t arr_size;
             std::memcpy(&arr_size, cmd_param->data + offset + sizeof(int32_t), sizeof(uint32_t));
-            auto *arr = reinterpret_cast<signed char *>(
-                const_cast<char *>(cmd_param->data) + offset + sizeof(int32_t) + sizeof(uint32_t)
+            auto *arr = static_cast<signed char *>(
+                static_cast<void *>(const_cast<char *>(cmd_param->data) + offset + sizeof(int32_t) + sizeof(uint32_t))
             );
             viper_.DispatchRawParam(param, value1, 0, 0, arr_size, arr);
             return {};
@@ -334,7 +356,7 @@ std::expected<uint32_t, int32_t> ViperContext::HandleGetParam(
     uint32_t query;
     std::memcpy(&query, cmd_param->data, sizeof(uint32_t));
 
-    auto write_value = [&](const void *value, uint32_t vsize) noexcept -> uint32_t {
+    auto write_value = [&](const std::byte *value, uint32_t vsize) noexcept -> uint32_t {
         reply_param->status = 0;
         reply_param->vsize = vsize;
         std::memcpy(reply_param->data + offset, value, vsize);
@@ -345,38 +367,44 @@ std::expected<uint32_t, int32_t> ViperContext::HandleGetParam(
 
     switch (query) {
         case kParamGetEnabled: {
-            const int32_t value = enable_.load(std::memory_order_relaxed) ? 1 : 0;
-            return write_value(&value, sizeof(int32_t));
+            const int32_t value = enable_.load() ? 1 : 0;
+            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(int32_t));
         }
         case kParamGetConfigure: {
             const int32_t value =
-                disable_reason_.load(std::memory_order_relaxed) == DisableReason::NONE ? 1 : 0;
-            return write_value(&value, sizeof(int32_t));
+                disable_reason_.load() == DisableReason::NONE ? 1 : 0;
+            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(int32_t));
         }
         case kParamGetStreaming: {
             const uint64_t frames = viper_.GetProcessedFrames();
             const int32_t is_processing =
                 (frames != last_streaming_frames_ && frames > 0) ? 1 : 0;
             last_streaming_frames_ = frames;
-            return write_value(&is_processing, sizeof(int32_t));
+            return write_value(reinterpret_cast<const std::byte *>(&is_processing), sizeof(int32_t));
         }
         case kParamGetSamplingRate: {
             const uint32_t value = viper_.GetSamplingRate();
-            return write_value(&value, sizeof(uint32_t));
+            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(uint32_t));
         }
         case kParamGetConvolutionKernelId: {
             const uint32_t value = viper_.GetConvolverKernelID();
-            return write_value(&value, sizeof(uint32_t));
+            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(uint32_t));
         }
         case kParamGetDriverVersionCode: {
             const int32_t value = VERSION_CODE;
-            return write_value(&value, sizeof(int32_t));
+            return write_value(reinterpret_cast<const std::byte *>(&value), sizeof(int32_t));
         }
         case kParamGetDriverVersionName: {
-            return write_value(VERSION_NAME, static_cast<uint32_t>(strlen(VERSION_NAME)));
+            return write_value(
+                reinterpret_cast<const std::byte *>(VERSION_NAME),
+                static_cast<uint32_t>(strlen(VERSION_NAME))
+            );
         }
         case kParamGetArchitecture: {
-            return write_value(VIPER_ARCHITECTURE, sizeof(VIPER_ARCHITECTURE) - 1);
+            return write_value(
+                reinterpret_cast<const std::byte *>(VIPER_ARCHITECTURE),
+                sizeof(VIPER_ARCHITECTURE) - 1
+            );
         }
         default: {
             return std::unexpected(-EINVAL);
@@ -428,14 +456,14 @@ int32_t ViperContext::HandleCommand(
             std::ranges::fill(buffer_, 0.0f);
             has_processed_ = false;
             fade_in_remaining_ = 0;
-            enable_.store(true, std::memory_order_release);
+            enable_.store(true);
             return write_status_reply(0);
         }
         case EFFECT_CMD_DISABLE: {
             if (rs != sizeof(int32_t) || reply_data == nullptr) {
                 return -EINVAL;
             }
-            enable_.store(false, std::memory_order_release);
+            enable_.store(false);
             return write_status_reply(0);
         }
         case EFFECT_CMD_SET_PARAM: {
@@ -445,7 +473,7 @@ int32_t ViperContext::HandleCommand(
             }
             const auto res =
                 HandleSetParam(cmd_size, static_cast<const effect_param_t *>(cmd_data), reply_data);
-            if (res) {
+            if (res.has_value()) {
                 *reply_size = sizeof(int32_t);
                 return 0;
             }
@@ -462,7 +490,7 @@ int32_t ViperContext::HandleCommand(
                 static_cast<effect_param_t *>(reply_data),
                 rs
             );
-            if (res) {
+            if (res.has_value()) {
                 *reply_size = *res;
                 return 0;
             }
@@ -483,11 +511,11 @@ int32_t ViperContext::HandleCommand(
 }
 
 int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buffer) noexcept {
-    if (disable_reason_.load(std::memory_order_relaxed) != DisableReason::NONE) {
+    if (disable_reason_.load() != DisableReason::NONE) {
         return -EINVAL;
     }
 
-    if (!enable_.load(std::memory_order_acquire)) {
+    if (!enable_.load()) {
         return -ENODATA;
     }
 
@@ -584,6 +612,6 @@ int32_t ViperContext::Process(audio_buffer_t *in_buffer, audio_buffer_t *out_buf
 }
 
 void ViperContext::SetDisableReason(DisableReason reason, std::string_view message) {
-    disable_reason_.store(reason, std::memory_order_release);
+    disable_reason_.store(reason);
     disable_reason_message_ = message;
 }

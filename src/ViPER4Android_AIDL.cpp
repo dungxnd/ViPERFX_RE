@@ -106,7 +106,7 @@ public:
     ndk::ScopedAStatus open(const Parameter::Common& common,
                             const std::optional<Parameter::Specific>& /*specific*/,
                             IEffect::OpenEffectReturn* ret) override {
-        std::unique_lock<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         if (mState != State::INIT) {
             ALOGE("open: already open");
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
@@ -176,7 +176,7 @@ public:
     }
 
     ndk::ScopedAStatus reopen(IEffect::OpenEffectReturn* ret) override {
-        std::unique_lock<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         if (!mInputMQ || !mOutputMQ || !mStatusMQ) {
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
         }
@@ -192,13 +192,13 @@ public:
     }
 
     ndk::ScopedAStatus getState(State* state) override {
-        std::unique_lock<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         *state = mState;
         return ndk::ScopedAStatus::ok();
     }
 
     ndk::ScopedAStatus command(CommandId cmd) override {
-        std::unique_lock<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
         switch (cmd) {
@@ -271,7 +271,7 @@ private:
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
         }
 
-        const auto* p = reinterpret_cast<const effect_param_t*>(bytes.data());
+        const auto* p = static_cast<const effect_param_t *>(static_cast<const void *>(bytes.data()));
 
         // Overflow-safe bounds check: compute in size_t to avoid uint32_t wrap-around.
         const size_t psize = p->psize;
@@ -286,10 +286,11 @@ private:
 
         uint32_t replySize = sizeof(int32_t);
         int32_t  reply     = 0;
-        std::unique_lock<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
+        // p is const effect_param_t*; HandleCommand takes const void* for cmd_data — no cast needed.
         (void)mContext.HandleCommand(EFFECT_CMD_SET_PARAM,
                                      static_cast<uint32_t>(cmdSize),
-                                     const_cast<effect_param_t*>(p),
+                                     p,
                                      &replySize, &reply);
         return ndk::ScopedAStatus::ok();
     }
@@ -307,12 +308,13 @@ private:
         }
         constexpr size_t kReplyBuf = 4096;
         std::vector<uint8_t> outBytes(kReplyBuf);
-        auto* cmd = const_cast<effect_param_t*>(
-            reinterpret_cast<const effect_param_t*>(idBytes.data()));
-        auto* reply = reinterpret_cast<effect_param_t*>(outBytes.data());
+        // idBytes.data() is const uint8_t*; HandleCommand takes const void* for cmd_data.
+        const auto* cmd = static_cast<const effect_param_t *>(
+            static_cast<const void *>(idBytes.data()));
+        auto* reply = static_cast<effect_param_t *>(static_cast<void *>(outBytes.data()));
         uint32_t replySize = static_cast<uint32_t>(kReplyBuf);
         {
-            std::unique_lock<std::mutex> lock(mMutex);
+            std::unique_lock lock(mMutex);
             (void)mContext.HandleCommand(EFFECT_CMD_GET_PARAM,
                                    static_cast<uint32_t>(idBytes.size()),
                                    cmd, &replySize, reply);
@@ -348,8 +350,8 @@ private:
         mWorkerThread.request_stop();
         if (mEventFlag) {
             // Unconditionally set any bit so the EventFlag::wait() returns.
-            reinterpret_cast<std::atomic<uint32_t>*>(
-                mInputMQ->getEventFlagWord())->fetch_or(1u, std::memory_order_release);
+            static_cast<std::atomic<uint32_t>*>(
+                    static_cast<void *>(mInputMQ->getEventFlagWord()))->fetch_or(1u, std::memory_order_release);
         }
 
         // Release mutex before joining: the worker may need the mutex to finish.
@@ -412,7 +414,7 @@ private:
     }
 
     void closeInternal() {
-        std::unique_lock<std::mutex> lock(mMutex);
+        std::unique_lock lock(mMutex);
         if (mState == State::INIT) return;
         stopWorkerLocked(lock);
         cleanupQueuesLocked();
