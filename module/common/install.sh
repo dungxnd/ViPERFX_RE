@@ -59,9 +59,15 @@ HIDL_SCORE=0
 # AIDL probes
 # ════════════════════════════════════════════════════════════════════════════
 
-# A1 — Binder IFactory registered (strongest possible signal)
-if service check android.hardware.audio.effect.IFactory 1>/dev/null 2>&1; then
-  ui_print "    [AIDL A1] IFactory Binder service confirmed"
+# A1 — lshal shows AIDL IFactory (strongest possible signal).
+# AIDL vendor HALs appear in lshal WITHOUT an @version, e.g.:
+#   "android.hardware.audio.effect.IFactory/default"
+# IMPORTANT: Do NOT use "service check android.hardware.audio.effect.IFactory" here.
+# On Android 13+, audioserver registers its own in-process AIDL IFactory proxy in
+# the regular ServiceManager even when the vendor HAL underneath is pure HIDL.
+# That "service check" would fire on every Android 13+ device → guaranteed false-positive.
+if lshal 2>/dev/null | grep -qF "android.hardware.audio.effect.IFactory"; then
+  ui_print "    [AIDL A1] lshal: AIDL IFactory vendor HAL confirmed"
   AIDL_SCORE=$((AIDL_SCORE + 10))
 fi
 
@@ -101,10 +107,13 @@ fi
 # HIDL probes
 # ════════════════════════════════════════════════════════════════════════════
 
-# H1 — HIDL IEffectsFactory registered in hwservicemanager (strongest HIDL signal)
-# android.hardware.audio.effect@X.Y::IEffectsFactory/default
-if service list 2>/dev/null | grep -q "android.hardware.audio.effect@.*IEffectsFactory"; then
-  ui_print "    [HIDL H1] HIDL IEffectsFactory service confirmed"
+# H1 — lshal shows HIDL IEffectsFactory (strongest HIDL signal).
+# HIDL vendor HALs appear in lshal WITH an @version, e.g.:
+#   "android.hardware.audio.effect@7.0::IEffectsFactory/default"
+# IMPORTANT: Do NOT use "service list" here — on Android 12+, service list only
+# queries the regular Binder ServiceManager and never sees hwbinder/HIDL services.
+if lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect@[0-9]+\.[0-9]+::IEffectsFactory"; then
+  ui_print "    [HIDL H1] lshal: HIDL IEffectsFactory vendor HAL confirmed"
   HIDL_SCORE=$((HIDL_SCORE + 10))
 fi
 
@@ -128,11 +137,10 @@ if vintf_hal_format "android.hardware.audio.effect" "hidl"; then
   HIDL_SCORE=$((HIDL_SCORE + 4))
 fi
 
-# H5 — HIDL IEffectsFactory listed via service list (fallback if H1 missed it)
-# Some OEMs rename the service; check hwservicemanager listing too.
+# H5 — lshal fallback: any android.hardware.audio.effect@* entry (handles OEM renames)
 if [ "$HIDL_SCORE" -eq 0 ] && \
-   service list 2>/dev/null | grep -q "android.hardware.audio.effect"; then
-  ui_print "    [HIDL H5] HIDL audio effect service listed"
+   lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect@[0-9]"; then
+  ui_print "    [HIDL H5] lshal: HIDL audio effect HAL entry found"
   HIDL_SCORE=$((HIDL_SCORE + 2))
 fi
 
