@@ -6,16 +6,28 @@
 #      strong OEM signal the device shipped with a legacy audio stack regardless
 #      of API level. OEMs like OnePlus ship Android 15 with legacy HAL.
 #
-#   1b. VINTF override: if Signal 1 fired but the VINTF manifest explicitly
-#       lists the AIDL audio effect interface, the device runs a true AIDL
-#       stack (legacy XML kept only for 32-bit compat). Override the guess.
+#   1b. VINTF override: if Signal 1 fired but the VENDOR VINTF manifest
+#       explicitly lists the AIDL audio effect interface, the device runs a
+#       true AIDL stack (legacy XML kept only for 32-bit compat).
+#
+#       CRITICAL: Only /vendor/etc/vintf/, /vendor/manifest.xml, and
+#       /odm/etc/vintf/ are searched — these are the *device* manifests
+#       (what the vendor HAL *provides*).
+#
+#       /system/etc/vintf/ is intentionally EXCLUDED. It contains the
+#       framework *compatibility matrix* (compatibility_matrix.*.xml) which
+#       lists android.hardware.audio.effect as an *optional* AIDL HAL the
+#       framework *accepts* — present on every Android 13+ device regardless
+#       of whether the vendor implements it.  Grepping it causes a 100%
+#       false-positive on legacy A13–A15 OEM devices.
 #
 #   2. Static FS — AIDL-positive: actual AIDL HAL binaries or config present.
 #      Works in recovery/offline mode. Most reliable cross-OEM positive signal.
 #        a. AIDL HAL executable in /vendor/bin/hw/ or /apex/
-#        b. VINTF manifest declares android.hardware.audio.effect (AIDL iface)
-#        c. audio_effects_config.xml (AOSP AIDL standard filename, distinct
-#           from legacy audio_effects.conf / audio_effects.xml)
+#        b. VENDOR VINTF manifest declares android.hardware.audio.effect
+#           (same exclusion rule: /system/etc/vintf/ not searched)
+#        c. audio_effects_config.xml (AOSP AIDL-era filename, distinct from
+#           legacy audio_effects.conf / audio_effects.xml)
 #
 #   3. Runtime property: init.svc.vendor.audio-hal-aidl = "running".
 #      Most reliable when booted, but only canonical AOSP service names —
@@ -50,18 +62,24 @@ if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
 fi
 
 # ── Signal 1b: VINTF override ─────────────────────────────────────────────────
-# If Signal 1 fired but the VINTF manifest (authoritative OEM SoC declaration)
-# explicitly lists the AIDL audio effect interface, the legacy XML files are kept
-# only for 32-bit compat — the device runs a true AIDL stack. Override the guess.
-# Searches all known manifest locations:
+# If Signal 1 fired but the VENDOR VINTF manifest explicitly lists the AIDL
+# audio effect interface, the legacy XML files are kept only for 32-bit compat
+# and the device runs a true AIDL stack. Override the guess.
+#
+# Search ONLY vendor/ODM device manifests — NOT /system/etc/vintf/:
 #   /vendor/etc/vintf/   — standard Treble vendor manifest directory
 #   /vendor/manifest.xml — legacy flat manifest (pre-Treble OEMs, older devices)
 #   /odm/etc/vintf/      — ODM overlay manifests
-#   /system/etc/vintf/   — framework manifests (some OEMs list effect HALs here)
+#
+# /system/etc/vintf/ is EXCLUDED: it holds the *framework compatibility matrix*
+# (compatibility_matrix.*.xml) which declares "android.hardware.audio.effect"
+# as an optional HAL the framework *can use* — true on every Android 13+ device
+# regardless of whether the vendor actually provides the AIDL HAL.  Including it
+# produces a guaranteed false-positive on legacy OEM A13–A15 devices.
 if $LEGACY_CONFIRMED && grep -rq "android.hardware.audio.effect" \
      /vendor/etc/vintf/ /vendor/manifest.xml \
-     /odm/etc/vintf/ /system/etc/vintf/ 2>/dev/null; then
-  ui_print "    ! VINTF declares AIDL effect iface — overriding legacy XML signal"
+     /odm/etc/vintf/ 2>/dev/null; then
+  ui_print "    ! Vendor VINTF declares AIDL effect iface — overriding legacy XML signal"
   LEGACY_CONFIRMED=false
   USE_AIDL=true
 fi
@@ -73,10 +91,12 @@ if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
      ls /apex/com.android.hardware.audio/bin/hw/*audio* 1>/dev/null 2>&1; then
     USE_AIDL=true
   fi
-  # 2b. VINTF manifest declares AIDL audio effect interface (all known paths)
+  # 2b. Vendor VINTF manifest declares AIDL audio effect interface.
+  # Same exclusion rule as Signal 1b: /system/etc/vintf/ NOT searched because
+  # it contains the framework compatibility matrix, not the device manifest.
   if ! $USE_AIDL && grep -rq "android.hardware.audio.effect" \
        /vendor/etc/vintf/ /vendor/manifest.xml \
-       /odm/etc/vintf/ /system/etc/vintf/ 2>/dev/null; then
+       /odm/etc/vintf/ 2>/dev/null; then
     USE_AIDL=true
   fi
   # 2c. audio_effects_config.xml — AOSP AIDL-era filename (distinct from

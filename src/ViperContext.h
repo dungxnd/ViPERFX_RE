@@ -34,6 +34,11 @@ public:
 
     [[nodiscard]] int32_t Process(audio_buffer_t* in_buffer, audio_buffer_t* out_buffer) noexcept;
 
+    // Accessor for the AIDL worker loop to apply SHM param snapshots and
+    // load DDC/convolver data directly without going through the legacy
+    // EFFECT_CMD_SET_PARAM serialisation layer.
+    ViPER& viper() noexcept { return viper_; }
+
 private:
     effect_config_t config_{};
     std::atomic<DisableReason> disable_reason_{DisableReason::NONE};

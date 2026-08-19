@@ -23,8 +23,11 @@
 #define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <fcntl.h>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -33,7 +36,10 @@
 #include <string_view>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 // NDK binder
@@ -46,6 +52,7 @@
 #include <fmq/AidlMessageQueue.h>
 
 #include "ViperContext.h"
+#include "viper/ViPERParams.h"
 #include "viper/constants.h"
 
 // ---------------------------------------------------------------------------
@@ -95,6 +102,232 @@ const AudioUuid kImplUuid = {
 
 inline constexpr std::string_view kEffectName       = "ViPER4Android";
 inline constexpr std::string_view kImplementorName  = VIPER_AUTHORS;
+
+// ---------------------------------------------------------------------------
+// ShmChannel — maps the three ConfigChannel SHM files and provides
+// poll-on-change helpers for the AIDL worker loop.
+//
+// Layout mirrors ConfigChannel.kt / ViperParamsLayout.kt exactly:
+//
+//   shm_params.bin (4096 bytes):
+//     [0..3]   magic  (0x534D3456)
+//     [4..7]   format version  (6)
+//     [8..11]  active slot index (0 or 1)
+//     [12..15] update counter
+//     [16..19] ViPERParams struct size
+//     [20..]   slot A  (ViPERParams, 1164 bytes)
+//     [20+1164..]  slot B  (ViPERParams, 1164 bytes)
+//
+//   shm_bulk.bin (4096 bytes):
+//     DDC sub-channel  [0..2047]:
+//       [8..11]  seq
+//       [12..15] command  (1=DDC, 3=DDC_RESET)
+//       [16..19] data size
+//       [32..]   payload: int32 perRateFloats, int32 totalFloats, then floats
+//     Convolver sub-channel [2048..4095]:
+//       [8..11]  seq
+//       [12..15] command  (2=CONVOLVER_PATH, 4=CONVOLVER_RESET)
+//       [16..19] data size
+//       [32..]   payload: null-terminated UTF-8 path
+// ---------------------------------------------------------------------------
+class ShmChannel {
+public:
+    // SHM layout constants (must match ConfigChannel.kt)
+    static constexpr size_t kParamsShmSize  = 4096;
+    static constexpr size_t kBulkShmSize    = 4096;
+    static constexpr uint32_t kShmMagic    = 0x534D3456u;
+    static constexpr uint32_t kFormatVer   = 6u;
+    static constexpr size_t kParamsStructSize = 1164; // ViperParamsLayout.SIZE
+
+    static constexpr int32_t kParamsActiveOffset     = 8;
+    static constexpr int32_t kParamsUpdateCountOffset = 12;
+    static constexpr int32_t kParamsHeaderSize        = 20;
+    static constexpr int32_t kParamsSlotAOffset       = kParamsHeaderSize;
+    static constexpr int32_t kParamsSlotBOffset       = kParamsHeaderSize + static_cast<int32_t>(kParamsStructSize);
+
+    static constexpr int32_t kBulkDdcBase             = 0;
+    static constexpr int32_t kBulkConvolverBase       = 2048;
+    static constexpr int32_t kBulkSeqOffset           = 8;
+    static constexpr int32_t kBulkCommandOffset       = 12;
+    static constexpr int32_t kBulkDataSizeOffset      = 16;
+    static constexpr int32_t kBulkHeaderSize          = 32;
+    static constexpr int32_t kBulkCmdDdc              = 1;
+    static constexpr int32_t kBulkCmdConvolverPath    = 2;
+    static constexpr int32_t kBulkCmdDdcReset         = 3;
+    static constexpr int32_t kBulkCmdConvolverReset   = 4;
+
+    ShmChannel() = default;
+    ~ShmChannel() { unmap(); }
+    ShmChannel(const ShmChannel&)            = delete;
+    ShmChannel& operator=(const ShmChannel&) = delete;
+
+    // Open + mmap both shm files.  Non-fatal: if either file is missing the
+    // ShmChannel stays disabled and pollParams/pollBulk are no-ops.
+    void open() {
+        paramsPtr_ = mapFile("/data/local/tmp/v4a/shm_params.bin", kParamsShmSize);
+        bulkPtr_   = mapFile("/data/local/tmp/v4a/shm_bulk.bin",   kBulkShmSize);
+        if (paramsPtr_) {
+            ALOGD("ShmChannel: params mmap OK");
+        } else {
+            ALOGE("ShmChannel: params mmap failed — parameters will not be applied");
+        }
+        if (bulkPtr_) {
+            ALOGD("ShmChannel: bulk mmap OK");
+        } else {
+            ALOGE("ShmChannel: bulk mmap failed — DDC/convolver will not be applied");
+        }
+    }
+
+    // Retry mapping whichever files were absent at open() time.
+    // Called from the worker loop on every iteration until both are mapped.
+    // Once both ptrs are non-null this becomes a single null-check branch — no
+    // syscalls, no log spam.
+    void tryOpenMissing() noexcept {
+        if (!paramsPtr_) {
+            paramsPtr_ = mapFile("/data/local/tmp/v4a/shm_params.bin",
+                                 kParamsShmSize, /*silent_enoent=*/true);
+            if (paramsPtr_) ALOGI("ShmChannel: params mmap OK (late open)");
+        }
+        if (!bulkPtr_) {
+            bulkPtr_ = mapFile("/data/local/tmp/v4a/shm_bulk.bin",
+                               kBulkShmSize, /*silent_enoent=*/true);
+            if (bulkPtr_) ALOGI("ShmChannel: bulk mmap OK (late open)");
+        }
+    }
+
+    // Poll the params SHM for a new snapshot.  Returns the active-slot pointer
+    // (into the mmap region) when the update counter has changed since the last
+    // call, or nullptr when nothing changed / SHM unavailable.
+    // The pointer is valid until the next workerLoop iteration — no copy needed;
+    // ViPER::ApplyParams() reads the struct by value.
+    const viper::ViPERParams* pollParams() noexcept {
+        if (!paramsPtr_) return nullptr;
+        const auto* base = static_cast<const uint8_t*>(paramsPtr_);
+
+        uint32_t counter;
+        std::memcpy(&counter, base + kParamsUpdateCountOffset, sizeof(counter));
+        if (counter == lastParamsCounter_) return nullptr;
+        lastParamsCounter_ = counter;
+
+        uint32_t slot;
+        std::memcpy(&slot, base + kParamsActiveOffset, sizeof(slot));
+        const int32_t slotOff = (slot == 0) ? kParamsSlotAOffset : kParamsSlotBOffset;
+
+        // Safety: ensure the slot fits within the mapped region
+        if (static_cast<size_t>(slotOff) + kParamsStructSize > kParamsShmSize) {
+            ALOGE("ShmChannel: corrupt slot offset %d", slotOff);
+            return nullptr;
+        }
+        return reinterpret_cast<const viper::ViPERParams*>(base + slotOff);
+    }
+
+    // Poll the DDC bulk sub-channel.  Returns true and fills [out_sections44,
+    // out_sections48, out_count] when a new DDC payload is available.
+    // Returns false (no-op) when nothing changed.
+    bool pollDdc(const viper::BiquadSection** out44, const viper::BiquadSection** out48,
+                 uint32_t* out_count, bool* out_reset) noexcept {
+        if (!bulkPtr_) return false;
+        const auto* base = static_cast<const uint8_t*>(bulkPtr_) + kBulkDdcBase;
+
+        int32_t seq, cmd, dataSize;
+        std::memcpy(&seq,      base + kBulkSeqOffset,      sizeof(seq));
+        std::memcpy(&cmd,      base + kBulkCommandOffset,  sizeof(cmd));
+        std::memcpy(&dataSize, base + kBulkDataSizeOffset, sizeof(dataSize));
+        if (seq == lastDdcSeq_) return false;
+        lastDdcSeq_ = seq;
+
+        if (cmd == kBulkCmdDdcReset) {
+            *out_reset = true;
+            return true;
+        }
+        if (cmd != kBulkCmdDdc) return false;
+        *out_reset = false;
+
+        // Payload layout: int32 perRateFloats, int32 totalFloats, then floats.
+        // totalFloats == perRateFloats * 2  (44100 first, 48000 second)
+        const auto* payload = base + kBulkHeaderSize;
+        int32_t perRate, total;
+        std::memcpy(&perRate, payload,                   sizeof(perRate));
+        std::memcpy(&total,   payload + sizeof(int32_t), sizeof(total));
+        if (perRate <= 0 || total != perRate * 2) return false;
+        if (dataSize < 8 + total * static_cast<int32_t>(sizeof(float))) return false;
+
+        const auto* floats = reinterpret_cast<const float*>(payload + 8);
+        // Sections: each BiquadSection is 5 floats.
+        if (perRate % 5 != 0) return false;
+        *out_count = static_cast<uint32_t>(perRate / 5);
+        *out44     = reinterpret_cast<const viper::BiquadSection*>(floats);
+        *out48     = reinterpret_cast<const viper::BiquadSection*>(floats + perRate);
+        return true;
+    }
+
+    // Poll the convolver bulk sub-channel.  Returns true and fills [out_path]
+    // or sets [out_reset] when a new command is available.
+    bool pollConvolver(std::string* out_path, bool* out_reset) noexcept {
+        if (!bulkPtr_) return false;
+        const auto* base = static_cast<const uint8_t*>(bulkPtr_) + kBulkConvolverBase;
+
+        int32_t seq, cmd, dataSize;
+        std::memcpy(&seq,      base + kBulkSeqOffset,      sizeof(seq));
+        std::memcpy(&cmd,      base + kBulkCommandOffset,  sizeof(cmd));
+        std::memcpy(&dataSize, base + kBulkDataSizeOffset, sizeof(dataSize));
+        if (seq == lastConvolverSeq_) return false;
+        lastConvolverSeq_ = seq;
+
+        if (cmd == kBulkCmdConvolverReset) {
+            *out_reset = true;
+            return true;
+        }
+        if (cmd != kBulkCmdConvolverPath) return false;
+        *out_reset = false;
+        if (dataSize <= 0 ||
+            static_cast<size_t>(kBulkHeaderSize + dataSize) > kBulkShmSize / 2) {
+            return false;
+        }
+        const auto* pathBytes = base + kBulkHeaderSize;
+        out_path->assign(reinterpret_cast<const char*>(pathBytes),
+                         static_cast<size_t>(dataSize));
+        return true;
+    }
+
+private:
+    void* paramsPtr_ { nullptr };
+    void* bulkPtr_   { nullptr };
+
+    uint32_t lastParamsCounter_  { 0 };
+    int32_t  lastDdcSeq_         { 0 };
+    int32_t  lastConvolverSeq_   { 0 };
+
+    // silent_enoent: if true, suppress the error log when the file simply does
+    // not exist yet (used by tryOpenMissing() to avoid per-frame log spam).
+    static void* mapFile(const char* path, size_t size,
+                         bool silent_enoent = false) noexcept {
+        int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            if (!silent_enoent || errno != ENOENT)
+                ALOGE("ShmChannel: open(%s) failed: %s", path, strerror(errno));
+            return nullptr;
+        }
+        void* ptr = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        ::close(fd);
+        if (ptr == MAP_FAILED) {
+            ALOGE("ShmChannel: mmap(%s, %zu) failed: %s", path, size, strerror(errno));
+            return nullptr;
+        }
+        // Validate magic + version in the params file.
+        const auto* u32 = static_cast<const uint32_t*>(ptr);
+        if (u32[0] != kShmMagic || u32[1] != kFormatVer) {
+            ALOGI("ShmChannel: %s magic/version mismatch (0x%08x/%u) — will init on first write",
+                  path, u32[0], u32[1]);
+        }
+        return ptr;
+    }
+
+    void unmap() noexcept {
+        if (paramsPtr_) { ::munmap(paramsPtr_, kParamsShmSize); paramsPtr_ = nullptr; }
+        if (bulkPtr_)   { ::munmap(bulkPtr_,   kBulkShmSize);   bulkPtr_   = nullptr; }
+    }
+};
 
 // ---------------------------------------------------------------------------
 // ViPEREffect — direct BnEffect implementation (no EffectImpl base class)
@@ -175,6 +408,12 @@ public:
         ret->statusMQ    = mStatusMQ->dupeDesc();
         ret->inputDataMQ = mInputMQ->dupeDesc();
         ret->outputDataMQ = mOutputMQ->dupeDesc();
+
+        // Map SHM parameter/bulk files.  Non-fatal: worker polling is no-op if
+        // either file is absent.  The app (ConfigChannel.kt) creates them on first
+        // writeFullState() call — they may not exist yet if the effect opened before
+        // the app wrote its first state snapshot.
+        mShm.open();
 
         mState = State::IDLE;
         ALOGD("open: sr=%u frames=%zu", mSampleRate, mFrameCount);
@@ -396,6 +635,60 @@ private:
 
             if (stopToken.stop_requested()) break;
 
+            // ── SHM late-open (race window: app may not have written SHM yet) ─
+            // ConfigChannel.kt creates the files on the first writeFullState() call.
+            // If they were absent at open() time, retry here on every iteration
+            // until they appear (cheap: mapFile only does work when ptr is null).
+            mShm.tryOpenMissing();
+
+            // ── SHM parameter polling ────────────────────────────────────────
+            // The Android app writes ViPERParams snapshots via ConfigChannel.kt
+            // (shm_params.bin, double-buffered) and DDC/convolver data via the
+            // bulk channel (shm_bulk.bin).  Poll here — before reading audio
+            // frames — so the DSP always uses the most recent user settings.
+            // mMutex is held only around the DSP apply/process calls, not around
+            // the SHM reads, to keep the lock scope minimal.
+            {
+                // Params snapshot
+                if (const viper::ViPERParams* snap = mShm.pollParams()) {
+                    std::unique_lock lock(mMutex);
+                    mContext.viper().ApplyParams(*snap);
+                }
+
+                // DDC bulk channel
+                {
+                    const viper::BiquadSection* sec44 = nullptr;
+                    const viper::BiquadSection* sec48 = nullptr;
+                    uint32_t sectionCount = 0;
+                    bool ddcReset = false;
+                    if (mShm.pollDdc(&sec44, &sec48, &sectionCount, &ddcReset)) {
+                        std::unique_lock lock(mMutex);
+                        if (ddcReset) {
+                            mContext.viper().LoadDdcCoefficients(nullptr, nullptr, 0);
+                        } else {
+                            mContext.viper().LoadDdcCoefficients(sec44, sec48, sectionCount);
+                        }
+                    }
+                }
+
+                // Convolver bulk channel — poll path without the lock;
+                // loadKernelFromPath does file I/O and then acquires mMutex
+                // itself for the final DSP apply.
+                {
+                    std::string kernelPath;
+                    bool convolverReset = false;
+                    if (mShm.pollConvolver(&kernelPath, &convolverReset)) {
+                        if (convolverReset) {
+                            std::unique_lock lock(mMutex);
+                            mContext.viper().UnloadConvolverKernel();
+                        } else {
+                            loadKernelFromPath(kernelPath); // acquires mMutex internally
+                        }
+                    }
+                }
+            }
+            // ── end SHM polling ──────────────────────────────────────────────
+
             const size_t avail = mInputMQ->availableToRead();
             if (avail == 0) continue;
 
@@ -407,10 +700,8 @@ private:
             const size_t frames = avail / kChannels;
             audio_buffer_t inBuf  = { .frame_count = frames, .f32 = mWorkerBuf.data() };
             audio_buffer_t outBuf = { .frame_count = frames, .f32 = mWorkerBuf.data() };
-            // Hold mMutex across Process() to serialise against setParameter()
-            // (Binder thread) which modifies DSP state under the same lock.
-            // The worker runs at SCHED_FIFO 3; the Binder thread at SCHED_OTHER,
-            // so priority inversion is not a concern in the current threading model.
+            // Hold mMutex across Process() to serialise against the SHM apply
+            // calls above and setParameter() calls on the Binder thread.
             {
                 std::unique_lock lock(mMutex);
                 (void)mContext.Process(&inBuf, &outBuf);
@@ -425,6 +716,100 @@ private:
             mStatusMQ->write(&st, 1);
         }
         ALOGD("worker: stopped");
+    }
+
+    // Load a convolver kernel from a staged WAV file path.
+    // File I/O is done without the lock; mMutex is acquired only for the final
+    // LoadConvolverKernel() call to serialise against Process().
+    void loadKernelFromPath(const std::string& path) {
+        int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            ALOGE("loadKernelFromPath: open(%s) failed: %s", path.c_str(), strerror(errno));
+            return;
+        }
+        struct stat st{};
+        if (::fstat(fd, &st) < 0 || st.st_size <= 0) {
+            ALOGE("loadKernelFromPath: fstat(%s) failed", path.c_str());
+            ::close(fd);
+            return;
+        }
+        std::vector<uint8_t> data(static_cast<size_t>(st.st_size));
+        ssize_t rd = ::read(fd, data.data(), data.size());
+        ::close(fd);
+        if (rd != static_cast<ssize_t>(data.size())) {
+            ALOGE("loadKernelFromPath: read incomplete %zd/%zu", rd, data.size());
+            return;
+        }
+
+        // Parse minimal WAV header: RIFF + fmt + data chunks.
+        // We expect 32-bit IEEE float stereo (format 3, or any PCM we can handle).
+        if (data.size() < 44) { ALOGE("loadKernelFromPath: file too small"); return; }
+
+        uint32_t sampleRate = 0, byteRate = 0;
+        uint16_t audioFmt = 0, channels = 0, bitsPerSample = 0;
+        uint32_t dataSize = 0;
+        size_t dataOffset = 0;
+
+        // Walk chunks after the 12-byte RIFF header.
+        size_t pos = 12;
+        while (pos + 8 <= data.size()) {
+            uint32_t chunkId, chunkSize;
+            std::memcpy(&chunkId,   data.data() + pos,     4);
+            std::memcpy(&chunkSize, data.data() + pos + 4, 4);
+            pos += 8;
+            constexpr uint32_t kFmt  = 0x20746D66u; // 'fmt '
+            constexpr uint32_t kData = 0x61746164u; // 'data'
+            if (chunkId == kFmt && chunkSize >= 16) {
+                std::memcpy(&audioFmt,      data.data() + pos,      2);
+                std::memcpy(&channels,      data.data() + pos + 2,  2);
+                std::memcpy(&sampleRate,    data.data() + pos + 4,  4);
+                std::memcpy(&byteRate,      data.data() + pos + 8,  4);
+                std::memcpy(&bitsPerSample, data.data() + pos + 14, 2);
+            } else if (chunkId == kData) {
+                dataOffset = pos;
+                dataSize   = chunkSize;
+                break;
+            }
+            pos += chunkSize + (chunkSize & 1); // word-align
+        }
+
+        if (dataOffset == 0 || channels == 0 || sampleRate == 0) {
+            ALOGE("loadKernelFromPath: invalid WAV structure in %s", path.c_str());
+            return;
+        }
+
+        // Convert samples to float.
+        std::vector<float> samples;
+        const uint32_t frameCount = dataSize / (channels * (bitsPerSample / 8));
+        samples.resize(static_cast<size_t>(frameCount) * channels);
+        const uint8_t* src = data.data() + dataOffset;
+
+        if (audioFmt == 3 && bitsPerSample == 32) {
+            // IEEE float — direct copy
+            std::memcpy(samples.data(), src, samples.size() * 4);
+        } else if (audioFmt == 1 && bitsPerSample == 16) {
+            // PCM 16-bit → float
+            for (size_t i = 0; i < samples.size(); ++i) {
+                int16_t s;
+                std::memcpy(&s, src + i * 2, 2);
+                samples[i] = s / 32768.0f;
+            }
+        } else {
+            ALOGE("loadKernelFromPath: unsupported WAV fmt=%u bits=%u", audioFmt, bitsPerSample);
+            return;
+        }
+
+        const uint32_t kernelId = static_cast<uint32_t>(
+            std::hash<std::string>{}(path) & 0xFFFFFFFFu);
+        // File I/O complete. Acquire lock only around the DSP call.
+        std::unique_lock lock(mMutex);
+        auto result = mContext.viper().LoadConvolverKernel(
+            samples.data(), frameCount, channels, kernelId);
+        if (!result.has_value()) {
+            ALOGE("loadKernelFromPath: LoadConvolverKernel failed for %s", path.c_str());
+        } else {
+            ALOGD("loadKernelFromPath: loaded %s id=0x%08x", path.c_str(), *result);
+        }
     }
 
     // --- close / cleanup helpers ---
@@ -470,6 +855,10 @@ private:
     std::jthread mWorkerThread;
 
     ViperContext mContext;
+
+    // SHM channel: maps shm_params.bin + shm_bulk.bin for parameter polling.
+    // Opened in open(), lives for the lifetime of the ViPEREffect instance.
+    ShmChannel mShm;
 };
 
 // Static descriptor
