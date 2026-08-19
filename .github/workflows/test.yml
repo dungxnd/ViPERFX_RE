@@ -130,7 +130,7 @@ jobs:
 
       - name: Run clang-tidy on src/
         run: |
-          FILES=$(find ViPERFX_RE/src -name '*.cpp' -o -name '*.h' | grep -v 'aidl')
+          FILES=$(find src -name '*.cpp' -o -name '*.h' | grep -v 'aidl')
           clang-tidy-18 \
             -p tests/build \
             --checks="-*,clang-analyzer-*,cppcoreguidelines-*,modernize-*,performance-*,readability-*,-modernize-use-trailing-return-type" \

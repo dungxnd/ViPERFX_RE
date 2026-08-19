@@ -38,7 +38,7 @@ static effect_config_t make_stereo_config(
 static int32_t send_set_config(ViperContext& ctx, const effect_config_t& cfg) {
     int32_t reply = -1;
     uint32_t reply_size = sizeof(int32_t);
-    ctx.HandleCommand(
+    (void)ctx.HandleCommand(
         EFFECT_CMD_SET_CONFIG,
         static_cast<uint32_t>(sizeof(effect_config_t)),
         &cfg,
@@ -51,13 +51,13 @@ static int32_t send_set_config(ViperContext& ctx, const effect_config_t& cfg) {
 static int32_t send_enable(ViperContext& ctx) {
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    ctx.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
+    (void)ctx.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
     return reply;
 }
 static int32_t send_disable(ViperContext& ctx) {
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    ctx.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &rs, &reply);
+    (void)ctx.HandleCommand(EFFECT_CMD_DISABLE, 0, nullptr, &rs, &reply);
     return reply;
 }
 
@@ -260,7 +260,7 @@ TEST(ViperContext_Process, WhenNotConfigured_ReturnsEINVAL) {
     // Enable without SET_CONFIG → disable_reason is UNKNOWN
     int32_t reply = -1;
     uint32_t rs = sizeof(int32_t);
-    ctx.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
+    (void)ctx.HandleCommand(EFFECT_CMD_ENABLE, 0, nullptr, &rs, &reply);
 
     audio_buffer_t in_buf{}, out_buf{};
     EXPECT_EQ(ctx.Process(&in_buf, &out_buf), -EINVAL);
@@ -306,7 +306,7 @@ TEST_F(ViperContextProcessTest, Process_Pcm16_OutputIsNonZero) {
     // should carry audio energy — at least some non-zero samples.
     // Run several frames to get past the fade-in ramp.
     for (int i = 0; i < 3; ++i) {
-        ctx.Process(&in_buf, &out_buf);
+        (void)ctx.Process(&in_buf, &out_buf);
     }
     bool any_nonzero = false;
     for (auto v : out_pcm) {
@@ -387,7 +387,7 @@ TEST(ViperContext_Process, AccumulateMode_AddToOutput) {
     out_buf.f32         = out_f.data();
 
     // Run enough frames to clear the fade-in
-    for (int i = 0; i < 2; ++i) ctx.Process(&in_buf, &out_buf);
+    for (int i = 0; i < 2; ++i) (void)ctx.Process(&in_buf, &out_buf);
 
     // With accumulate mode, output ≥ pre-seeded value (modulo limiter clamping)
     // Just verify process returns 0 without crash
