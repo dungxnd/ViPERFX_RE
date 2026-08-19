@@ -51,14 +51,17 @@ _patch_xml_legacy() {
 }
 
 if [ "$MODE" = "aidl" ]; then
-  # Only touch a live file if the module overlay is not active for it (i.e. our
-  # entry is missing — meaning Magisk did not overlay this particular path).
+  # Patch any live file that either lacks our entry entirely OR contains a
+  # corrupted/wrong entry (wrong UUID, duplicate lines, or legacy v4a_re remnants).
+  # A file is considered clean only when it has exactly one correct AIDL entry
+  # with the right type UUID (7261726f).
   CFGS="$(find /odm /system /vendor /product /system_ext -type f \
           -name "*audio_effects*.conf" -o \
           -name "*audio_effects*.xml" -o \
           -name "*audio_effects_config*.xml" 2>/dev/null)"
   for FILE in ${CFGS}; do
-    grep -q "v4a_aidl\|v4a_standard_aidl\|v4a_standard_re" "$FILE" 2>/dev/null && continue
+    # Skip only if the correct UUID is already present (not just any v4a keyword)
+    grep -q "7261726f-6d75-7369-6364-28e2fd3ac39e" "$FILE" 2>/dev/null && continue
     _patch_xml_aidl "$FILE"
   done
 
@@ -71,7 +74,9 @@ else
           -name "*audio_effects*.conf" -o \
           -name "*audio_effects*.xml" 2>/dev/null)"
   for FILE in ${CFGS}; do
-    grep -q "v4a_standard_re\|v4a_re" "$FILE" 2>/dev/null && continue
+    # Skip only if the correct legacy impl UUID is already present
+    grep -q "90380da3-8536-4744-a6a3-5731970e640f" "$FILE" 2>/dev/null && \
+      ! grep -q "7261676f\|v4a_aidl" "$FILE" 2>/dev/null && continue
     _patch_xml_legacy "$FILE"
   done
 
