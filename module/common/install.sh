@@ -209,7 +209,35 @@ if $USE_AIDL; then
     place_file "$MODPATH/common/files/libv4a_aidl_$ABI.so" "/vendor/lib64/soundfx/libv4a_aidl.so"
   fi
 
-  ui_print "    Patching audio effect config files (AIDL)..."
+  # ── Shared patch helper ───────────────────────────────────────────────────
+  # patch_aidl_cfg TMPFILE
+  # Injects the v4a_aidl library + effect entry into a working copy of an
+  # AIDL-era audio effect config file.  Call AFTER cp-ing the original.
+  patch_aidl_cfg() {
+    local f="$1"
+    case "$f" in
+      *.conf)
+        sed -i "/v4a_standard_re {/,/}/d" "$f"
+        sed -i "/v4a_aidl {/,/}/d" "$f"
+        sed -i "s/^[[:space:]]*effects[[:space:]]*{/effects {\n  v4a_standard_re {\n    library v4a_aidl\n    uuid 90380da3-8536-4744-a6a3-5731970e640f\n  }/g" "$f"
+        sed -i "s/^[[:space:]]*libraries[[:space:]]*{/libraries {\n  v4a_aidl {\n    path $LIBPATCH\/lib\/soundfx\/libv4a_aidl.so\n  }/g" "$f"
+        ;;
+      *audio_effects_config*.xml | *.xml)
+        sed -i "/v4a_standard_re/d"   "$f"
+        sed -i "/v4a_standard_aidl/d" "$f"
+        sed -i "/v4a_aidl/d"          "$f"
+        # Expand self-closing tags before insertion: sed "a" appends after the
+        # opening tag line, but silently does nothing when the tag is self-closing
+        # (e.g. <libraries/> or <effects/>), leaving the config un-patched.
+        sed -i 's|<libraries/>|<libraries>\n</libraries>|g' "$f"
+        sed -i 's|<effects/>|<effects>\n</effects>|g' "$f"
+        sed -i "/<libraries/ a\\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" "$f"
+        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261676f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$f"
+        ;;
+    esac
+  }
+
+  ui_print "    Patching audio effect config files (AIDL — vendor partitions)..."
   # Use \( ... \) so -o is part of the -type f sub-expression, not a top-level OR
   CFGS="$(find /odm /system /vendor /product /system_ext -type f \
     \( -name "*audio_effects*.conf" \
@@ -219,38 +247,40 @@ if $USE_AIDL; then
   for OFILE in ${CFGS}; do
     TMP_FILE="$TMPDIR/v4a_$(basename "$OFILE")"
     cp -f "$OFILE" "$TMP_FILE"
-    case "$TMP_FILE" in
-      *.conf)
-        sed -i "/v4a_standard_re {/,/}/d" "$TMP_FILE"
-        sed -i "/v4a_aidl {/,/}/d" "$TMP_FILE"
-        sed -i "s/^[[:space:]]*effects[[:space:]]*{/effects {\n  v4a_standard_re {\n    library v4a_aidl\n    uuid 90380da3-8536-4744-a6a3-5731970e640f\n  }/g" "$TMP_FILE"
-        sed -i "s/^[[:space:]]*libraries[[:space:]]*{/libraries {\n  v4a_aidl {\n    path $LIBPATCH\/lib\/soundfx\/libv4a_aidl.so\n  }/g" "$TMP_FILE"
-        ;;
-      *audio_effects_config*.xml)
-        sed -i "/v4a_standard_re/d" "$TMP_FILE"
-        sed -i "/v4a_standard_aidl/d" "$TMP_FILE"
-        sed -i "/v4a_aidl/d" "$TMP_FILE"
-        # Expand self-closing tags before insertion: sed "a" appends after the
-        # opening tag line, but silently does nothing when the tag is self-closing
-        # (e.g. <libraries/> or <effects/>), leaving the config un-patched.
-        sed -i 's|<libraries/>|<libraries>\n</libraries>|g' "$TMP_FILE"
-        sed -i 's|<effects/>|<effects>\n</effects>|g' "$TMP_FILE"
-        sed -i "/<libraries/ a\\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" "$TMP_FILE"
-        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261676f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$TMP_FILE"
-        ;;
-      *.xml)
-        sed -i "/v4a_standard_re/d" "$TMP_FILE"
-        sed -i "/v4a_standard_aidl/d" "$TMP_FILE"
-        sed -i "/v4a_aidl/d" "$TMP_FILE"
-        # Expand self-closing tags before insertion (same reason as above).
-        sed -i 's|<libraries/>|<libraries>\n</libraries>|g' "$TMP_FILE"
-        sed -i 's|<effects/>|<effects>\n</effects>|g' "$TMP_FILE"
-        sed -i "/<libraries/ a\\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" "$TMP_FILE"
-        sed -i "/<effects/ a\\        <effect name=\"v4a_standard_re\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261676f-6d75-7369-6364-28e2fd3ac39e\"\/>" "$TMP_FILE"
-        ;;
-    esac
+    patch_aidl_cfg "$TMP_FILE"
     place_file "$TMP_FILE" "$OFILE"
     rm -f "$TMP_FILE"
+  done
+
+  # ── APEX config injection ─────────────────────────────────────────────────
+  # On devices where IFactory runs inside an APEX (e.g. Pixel 8 / AOSP
+  # com.android.hardware.audio.effect), EffectConfig.cpp calls
+  # config_file_path() which returns /apex/<name>/etc/audio_effects_config.xml
+  # — NOT /vendor/etc/.  The vendor-partition patches above are skipped.
+  #
+  # EffectConfig::resolveLibrary() DOES fall through to /vendor/lib64/soundfx/
+  # when the .so is absent from the APEX lib dir, so libv4a_aidl.so placement
+  # at /vendor/lib64/soundfx/ is already correct.  Only the XML registration
+  # is missing on APEX devices.
+  #
+  # Fix: patch the APEX config and store it under $MODPATH/apex/<name>/etc/.
+  # post-fs-data.sh bind-mounts each such file over the live APEX path at boot,
+  # before audioserver starts.
+  ui_print "    Patching audio effect config files (AIDL — APEX)..."
+  for APEX_DIR in /apex/*/; do
+    APEX_NAME="$(basename "$APEX_DIR")"
+    APEX_CFG="$APEX_DIR/etc/audio_effects_config.xml"
+    [ -f "$APEX_CFG" ] || continue
+    ui_print "      Found APEX config: $APEX_CFG"
+    TMP_FILE="$TMPDIR/v4a_apex_$(echo "$APEX_NAME" | tr '.' '_').xml"
+    cp -f "$APEX_CFG" "$TMP_FILE"
+    patch_aidl_cfg "$TMP_FILE"
+    # Store under $MODPATH/apex/<name>/etc/ for post-fs-data.sh to bind-mount
+    DEST_DIR="$MODPATH/apex/$APEX_NAME/etc"
+    mkdir -p "$DEST_DIR"
+    cp -f "$TMP_FILE" "$DEST_DIR/audio_effects_config.xml"
+    rm -f "$TMP_FILE"
+    ui_print "      Stored patched APEX config for $APEX_NAME"
   done
 
 else
