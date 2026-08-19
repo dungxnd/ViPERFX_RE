@@ -1,58 +1,18 @@
-LIBPATCH=`cat $MODPATH/libpatch.txt`
-MODE=`cat $MODPATH/aidl_mode.txt 2>/dev/null`
+#!/system/bin/sh
+MODDIR=${0%/*}
 
-if [ "$MODE" = "aidl" ]; then
-  CFGS="$(find /odm /system /vendor /product /system_ext -type f -name "*audio_effects*.conf" -o -name "*audio_effects*.xml" -o -name "*audio_effects_config*.xml")"
-  for FILE in ${CFGS}; do
-    case $FILE in
-      *.conf)
-          sed -i "/v4a_standard_re {/,/}/d" $FILE
-          sed -i "/v4a_aidl {/,/}/d" $FILE
-          sed -i "s/^effects {/effects {\n  v4a_standard_re {\n    library v4a_aidl\n    uuid 90380da3-8536-4744-a6a3-5731970e640f\n  }/g" $FILE
-          sed -i "s/^libraries {/libraries {\n  v4a_aidl {\n    path $LIBPATCH\/lib\/soundfx\/libv4a_aidl.so\n  }/g" $FILE
-          ;;
-      *audio_effects_config*.xml)
-          sed -i "/v4a_standard_re/d" $FILE
-          sed -i "/v4a_standard_aidl/d" $FILE
-          sed -i "/v4a_aidl/d" $FILE
-          sed -i "/<libraries>/ a\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" $FILE
-          sed -i "/<effects>/ a\        <effect name=\"v4a_standard_aidl\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"\/>" $FILE
-          ;;
-      *.xml)
-          sed -i "/v4a_standard_re/d" $FILE
-          sed -i "/v4a_standard_aidl/d" $FILE
-          sed -i "/v4a_aidl/d" $FILE
-          sed -i "/<libraries>/ a\        <library name=\"v4a_aidl\" path=\"libv4a_aidl.so\"\/>" $FILE
-          sed -i "/<effects>/ a\        <effect name=\"v4a_standard_re\" library=\"v4a_aidl\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\" type=\"7261726f-6d75-7369-6364-28e2fd3ac39e\"\/>" $FILE
-          ;;
-    esac
-  done
+# post-fs-data.sh — runtime phase (partitions are still RO at this point).
+# DO NOT run sed -i against /system /vendor /odm — they are mounted read-only.
+# All patched config files were written into $MODPATH during installation by
+# install.sh using place_file(), so the root manager's overlay (Magisk magic
+# mount / KernelSU + APatch OverlayFS) handles them automatically.
+#
+# The only safe operation here is a bind-mount fallback for ODM when the root
+# manager has not created an overlay entry for it (rare, device-specific).
 
-  if [ -d "/odm/etc/" ]; then
-    echo "Binding audio_effects.xml to odm partition..."
-    mount -o bind /data/adb/modules/ViPER4Android-RE/odm/etc/audio_effects.xml /odm/etc/audio_effects.xml
-  fi
-else
-  CFGS="$(find /odm /system /vendor -type f -name "*audio_effects*.conf" -o -name "*audio_effects*.xml")"
-  for FILE in ${CFGS}; do
-    case $FILE in
-      *.conf)
-          sed -i "/v4a_standard_re {/,/}/d" $FILE
-          sed -i "/v4a_re {/,/}/d" $FILE
-          sed -i "s/^effects {/effects {\n  v4a_standard_re {\n    library v4a_re\n    uuid 90380da3-8536-4744-a6a3-5731970e640f\n  }/g" $FILE
-          sed -i "s/^libraries {/libraries {\n  v4a_re {\n    path $LIBPATCH\/lib\/soundfx\/libv4a_re.so\n  }/g" $FILE
-          ;;
-      *.xml)
-          sed -i "/v4a_standard_re/d" $FILE
-          sed -i "/v4a_re/d" $FILE
-          sed -i "/<libraries>/ a\        <library name=\"v4a_re\" path=\"libv4a_re.so\"\/>" $FILE
-          sed -i "/<effects>/ a\        <effect name=\"v4a_standard_re\" library=\"v4a_re\" uuid=\"90380da3-8536-4744-a6a3-5731970e640f\"\/>" $FILE
-          ;;
-    esac
-  done
-
-  if [ -d "/odm/etc/" ]; then
-    echo "Binding audio_effects.xml to odm partition..."
-    mount -o bind /data/adb/modules/ViPER4Android-RE/odm/etc/audio_effects.xml /odm/etc/audio_effects.xml
+if [ -d "/odm/etc" ] && [ -f "$MODDIR/odm/etc/audio_effects.xml" ]; then
+  # Only bind-mount if not already overlaid
+  if ! grep -q "^overlay /odm" /proc/mounts 2>/dev/null; then
+    mount -o bind "$MODDIR/odm/etc/audio_effects.xml" /odm/etc/audio_effects.xml 2>/dev/null
   fi
 fi

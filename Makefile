@@ -168,28 +168,30 @@ aidl-%:
 	@mkdir -p $(OUT_DIR)
 	cp $(BUILD_DIR)/aidl/$*/libv4a_aidl.so $(OUT_DIR)/libv4a_aidl_$*.so
 
-# Prepare Magisk module directory (auto-detects AIDL vs legacy at flash time).
-# Ships both libv4a_re and libv4a_aidl .so files; install-combined.sh picks the
-# right one by checking for a running AIDL audio HAL process.
+# Prepare Magisk/KSU/APatch module directory (auto-detects AIDL vs legacy at flash time).
+# Ships both libv4a_re and libv4a_aidl .so files; install.sh picks the right one
+# by checking for a running AIDL audio HAL process (or API level / static FS).
 # Pass SKIP_LIBS=1 when .so files are already present in out/.
 module: $(if $(SKIP_LIBS),,libs aidl-libs)
-	@echo "Preparing Magisk module..."
+	@echo "Preparing Magisk/KSU/APatch module..."
 	@rm -rf $(MODULE_OUT)
 	@mkdir -p $(MODULE_OUT)/common/files
 	@cp -r $(MODULE_DIR)/META-INF $(MODULE_OUT)/
 	@cp $(MODULE_DIR)/module.prop $(MODULE_OUT)/module.prop
 	@cp $(MODULE_DIR)/customize.sh $(MODULE_OUT)/
 	@cp $(MODULE_DIR)/post-fs-data.sh $(MODULE_OUT)/post-fs-data.sh
+	@cp $(MODULE_DIR)/post-mount.sh $(MODULE_OUT)/post-mount.sh 2>/dev/null || true
 	@cp $(MODULE_DIR)/uninstall.sh $(MODULE_OUT)/
 	@cp $(MODULE_DIR)/LICENSE $(MODULE_OUT)/
+	@cp $(MODULE_DIR)/sepolicy.rule $(MODULE_OUT)/sepolicy.rule 2>/dev/null || true
 	@cp -r $(MODULE_DIR)/common/* $(MODULE_OUT)/common/
 	@sed -i.bak \
 		-e 's/^version=.*/version=$(VERSION_NAME)/' \
 		-e 's/^versionCode=.*/versionCode=$(VERSION_CODE)/' \
 		$(MODULE_OUT)/module.prop && rm -f $(MODULE_OUT)/module.prop.bak
 	@for abi in $(ABIS); do \
-		cp $(OUT_DIR)/libv4a_re_$$abi.so   $(MODULE_OUT)/common/files/; \
-		cp $(OUT_DIR)/libv4a_aidl_$$abi.so $(MODULE_OUT)/common/files/; \
+		cp $(OUT_DIR)/libv4a_re_$$abi.so   $(MODULE_OUT)/common/files/ 2>/dev/null || true; \
+		cp $(OUT_DIR)/libv4a_aidl_$$abi.so $(MODULE_OUT)/common/files/ 2>/dev/null || true; \
 	done
 
 # Create flashable zip

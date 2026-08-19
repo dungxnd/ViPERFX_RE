@@ -1,0 +1,30 @@
+# ViPER4Android-RE SELinux policy rules
+# Required for Android 13–16 enforcing mode
+# Supported by Magisk, KernelSU, and APatch out-of-the-box.
+
+# Allow Audio HAL to read/execute soundfx libraries in vendor partition
+allow hal_audio_default vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_default same_process_hal_file file { read getattr open execute execute_no_trans map }
+
+# Allow hal_audio_default to allocate executable memory (JIT / effect DSP)
+allow hal_audio_default hal_audio_default process { execmem }
+
+# Shared memory / Fast Message Queue (FMQ) support
+allow hal_audio_default ashmem_device chr_file { read write open ioctl }
+allow hal_audio_default ashmem_libcutils_device chr_file { read write open ioctl }
+
+# Audioserver: same library loading rights
+allow audioserver vendor_file file { read getattr open execute execute_no_trans map }
+allow audioserver same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow audioserver hal_audio_default process { execmem }
+
+# Binder IPC between audioserver and hal_audio_default (AIDL HAL path)
+allow audioserver hal_audio_default binder { call transfer }
+allow hal_audio_default audioserver binder { call transfer }
+
+# ViPER4Android user-space app Binder IPC
+allow appdomain hal_audio_default binder { call transfer }
+allow hal_audio_default appdomain binder { call transfer }
+allow untrusted_app hal_audio_service service_manager { find }
+allow untrusted_app_all hal_audio_service service_manager { find }
+allow untrusted_app_all audioserver binder { call transfer }

@@ -358,6 +358,8 @@ jobs:
           VERSION_CODE=$(grep '^versionCode=' module/module.prop | cut -d= -f2)
           REPO="${{ github.repository }}"
           CHANGELOG="https://github.com/${REPO}/releases/tag/${VERSION}"
+          # Patch updateJson in module.prop to always point at the repo that ran CI
+          sed -i "s|^updateJson=.*|updateJson=https://github.com/${REPO}/releases/latest/download/update.json|" module/module.prop
           cat > dist/update.json <<EOF
           {
             "version": "${VERSION}",
@@ -490,9 +492,11 @@ jobs:
           REPO="${{ github.repository }}"
           CHANGELOG_URL="https://github.com/${REPO}/releases/download/${VERSION}/changelog.md"
 
-          # Extract changelog-only markdown (for Magisk update checker)
+          # Extract changelog-only markdown; strip any LLM-generated version
+          # heading (e.g. "## Changelog v2.4.2") — we own the version number.
           echo '${{ steps.llm.outputs.changelogs }}' \
             | jq -r '.default.en // "(no changelog generated)"' \
+            | sed -E '/^#{1,3} *[Cc]hangelog.*/d' \
             > dist/changelog.md
 
           # Build full release body (static header + LLM changelog) into a separate file

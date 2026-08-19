@@ -1,33 +1,50 @@
 #!/sbin/sh
-
-#################
-# Initialization
-#################
-
 umask 022
-
-# echo before loading util_functions
-ui_print() { echo "$1"; }
-
-require_new_magisk() {
-  ui_print "*******************************"
-  ui_print " Please install Magisk v20.4+! "
-  ui_print "*******************************"
-  exit 1
-}
-
-#########################
-# Load util_functions.sh
-#########################
 
 OUTFD=$2
 ZIPFILE=$3
 
-mount /data 2>/dev/null
+ui_print() { echo "$1"; }
 
-[ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
-. /data/adb/magisk/util_functions.sh
-[ $MAGISK_VER_CODE -lt 20400 ] && require_new_magisk
+# NOTE: KernelSU and KernelSU Next NEVER read this file.
+# They inject their own installer.sh and run customize.sh directly.
+# This entry point is only reached via:
+#   - Magisk Manager (in-app flash)
+#   - APatch Manager (in-app flash)
+#   - Custom recovery (TWRP / OrangeFox) — Magisk/APatch only; KSU forbids recovery installs
+#
+# Detection order: APatch sets $APATCH=true, Magisk sets $MAGISK_VER_CODE.
+# We probe util_functions.sh paths rather than env vars here because env is
+# not yet inherited when update-binary first runs.
+
+UTIL_PATH=""
+for path in \
+  /data/adb/magisk/util_functions.sh \
+  /data/adb/ap/util_functions.sh \
+  /data/adb/modules/util_functions.sh; do
+  [ -f "$path" ] && { UTIL_PATH="$path"; break; }
+done
+
+# Recovery fallback — /data may not be mounted yet
+if [ -z "$UTIL_PATH" ]; then
+  mount /data 2>/dev/null
+  for path in \
+    /data/adb/magisk/util_functions.sh \
+    /data/adb/ap/util_functions.sh; do
+    [ -f "$path" ] && { UTIL_PATH="$path"; break; }
+  done
+fi
+
+if [ -n "$UTIL_PATH" ]; then
+  . "$UTIL_PATH"
+else
+  ui_print "***************************************************"
+  ui_print "! Cannot find Magisk or APatch environment!"
+  ui_print "! For KernelSU/KSUNext: install via the KSU app."
+  ui_print "! For Magisk/APatch: ensure manager is installed."
+  ui_print "***************************************************"
+  exit 1
+fi
 
 install_module
 exit 0
