@@ -129,6 +129,8 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
     // ViPER
     viper_.SetSamplingRate(config_.input_cfg.sampling_rate);
     viper_.ResetAllEffects();
+    // Config change is equivalent to a new stream: arm fade-in on the next Process().
+    supervisor_.OnStreamEnable();
 
     return {};
 }
