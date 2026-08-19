@@ -78,7 +78,6 @@ jobs:
             --output-on-failure \
             --parallel $(nproc) \
             --timeout 120 \
-            -T Test \
             --output-junit test-results.xml
 
       # ── 6. Upload test results ────────────────────────────────────────────────
