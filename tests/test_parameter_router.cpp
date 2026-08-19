@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 #include <array>
 #include <cstring>
+#include <new>
+#include <vector>
 
 using DR = ParameterRouter::DisableReason;
 
@@ -23,19 +25,27 @@ static std::vector<std::byte> make_set_payload(int32_t param, Vals... vals) {
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
     std::vector<std::byte> buf(total, std::byte{0});
-    auto* p = reinterpret_cast<effect_param_t*>(buf.data());
-    p->status = 0;
-    p->psize  = psize;
-    p->vsize  = vsize;
-
-    // Write param id
-    std::memcpy(p->data, &param, sizeof(int32_t));
+    // Use std::memcpy-based construction to avoid aliasing UB with raw byte buffers.
+    effect_param_t header{};
+    header.status = 0;
+    header.psize  = psize;
+    header.vsize  = vsize;
+    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
+    std::memcpy(buf.data() + sizeof(effect_param_t), &param, sizeof(int32_t));
 
     // Write values after Align4(psize) offset
-    int32_t arr[] = {static_cast<int32_t>(vals)...};
-    std::memcpy(p->data + aligned_psize, arr, vsize);
+    const std::array<int32_t, sizeof...(vals)> arr{static_cast<int32_t>(vals)...};
+    std::memcpy(buf.data() + sizeof(effect_param_t) + aligned_psize, arr.data(), vsize);
 
     return buf;
+}
+
+// Helper: get a mutable effect_param_t* from a byte buffer (placement-new + launder).
+static effect_param_t* as_param(std::vector<std::byte>& buf) {
+    return std::launder(reinterpret_cast<effect_param_t*>(buf.data()));
+}
+static const effect_param_t* as_cparam(const std::vector<std::byte>& buf) {
+    return std::launder(reinterpret_cast<const effect_param_t*>(buf.data()));
 }
 
 // Build a GET_PARAM payload (query key only, no value bytes).
@@ -45,11 +55,11 @@ static std::vector<std::byte> make_get_payload(int32_t query) {
     const size_t total = sizeof(effect_param_t) + aligned_psize;
 
     std::vector<std::byte> buf(total, std::byte{0});
-    auto* p = reinterpret_cast<effect_param_t*>(buf.data());
-    p->psize = psize;
-    p->vsize = sizeof(int32_t); // expected reply vsize
-
-    std::memcpy(p->data, &query, sizeof(int32_t));
+    effect_param_t header{};
+    header.psize = psize;
+    header.vsize = sizeof(int32_t); // expected reply vsize
+    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
+    std::memcpy(buf.data() + sizeof(effect_param_t), &query, sizeof(int32_t));
     return buf;
 }
 
@@ -62,13 +72,13 @@ constexpr size_t kReplyBufSize = 256;
 
 TEST(ParameterRouter_HandleSet, TooSmallCmdSize_ReturnsEINVAL) {
     ViPER viper;
-    int32_t reply = 0;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(1, 42);
-    const auto* p = reinterpret_cast<const effect_param_t*>(payload.data());
+    const auto* p = as_cparam(payload);
 
     auto res = ParameterRouter::HandleSet(
         static_cast<uint32_t>(sizeof(effect_param_t) - 1), // too small
-        p, &reply, viper
+        p, as_param(reply_buf), viper
     );
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
@@ -76,14 +86,14 @@ TEST(ParameterRouter_HandleSet, TooSmallCmdSize_ReturnsEINVAL) {
 
 TEST(ParameterRouter_HandleSet, TotalSizeMismatch_ReturnsEINVAL) {
     ViPER viper;
-    int32_t reply = 0;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(1, 42);
-    const auto* p = reinterpret_cast<const effect_param_t*>(payload.data());
+    const auto* p = as_cparam(payload);
 
     // cmd_size less than p->TotalSize() → security check fails
     auto res = ParameterRouter::HandleSet(
         static_cast<uint32_t>(payload.size() - 2),
-        p, &reply, viper
+        p, as_param(reply_buf), viper
     );
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
@@ -91,44 +101,44 @@ TEST(ParameterRouter_HandleSet, TotalSizeMismatch_ReturnsEINVAL) {
 
 TEST(ParameterRouter_HandleSet, SingleInt32Value_Succeeds) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(1, 0); // param=1 (master enable), val=0
-    const auto* p = reinterpret_cast<const effect_param_t*>(payload.data());
+    const auto* p = as_cparam(payload);
 
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(payload.size()), p, &reply, viper
+        static_cast<uint32_t>(payload.size()), p, as_param(reply_buf), viper
     );
     EXPECT_TRUE(res.has_value());
-    EXPECT_EQ(reply, 0);
+    EXPECT_EQ(as_param(reply_buf)->status, 0);
 }
 
 TEST(ParameterRouter_HandleSet, TwoInt32Values_Succeeds) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(80, 0, 0); // two-int param (e.g. eq band)
-    const auto* p = reinterpret_cast<const effect_param_t*>(payload.data());
+    const auto* p = as_cparam(payload);
 
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(payload.size()), p, &reply, viper
+        static_cast<uint32_t>(payload.size()), p, as_param(reply_buf), viper
     );
     EXPECT_TRUE(res.has_value());
 }
 
 TEST(ParameterRouter_HandleSet, ThreeInt32Values_Succeeds) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
     auto payload = make_set_payload(80, 0, 0, 0);
-    const auto* p = reinterpret_cast<const effect_param_t*>(payload.data());
+    const auto* p = as_cparam(payload);
 
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(payload.size()), p, &reply, viper
+        static_cast<uint32_t>(payload.size()), p, as_param(reply_buf), viper
     );
     EXPECT_TRUE(res.has_value());
 }
 
 TEST(ParameterRouter_HandleSet, UnknownValueSize_ReturnsEINVAL) {
     ViPER viper;
-    int32_t reply = -1;
+    std::vector<std::byte> reply_buf(sizeof(effect_param_t), std::byte{0});
 
     // Build a payload with an unusual vsize (e.g. 7 bytes)
     constexpr uint32_t psize = sizeof(int32_t);
@@ -137,14 +147,15 @@ TEST(ParameterRouter_HandleSet, UnknownValueSize_ReturnsEINVAL) {
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
     std::vector<std::byte> buf(total, std::byte{0});
-    auto* p = reinterpret_cast<effect_param_t*>(buf.data());
-    p->psize = psize;
-    p->vsize = vsize;
+    effect_param_t header{};
+    header.psize = psize;
+    header.vsize = vsize;
+    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
     int32_t param = 1;
-    std::memcpy(p->data, &param, sizeof(int32_t));
+    std::memcpy(buf.data() + sizeof(effect_param_t), &param, sizeof(int32_t));
 
     auto res = ParameterRouter::HandleSet(
-        static_cast<uint32_t>(total), p, &reply, viper
+        static_cast<uint32_t>(total), as_cparam(buf), as_param(reply_buf), viper
     );
     EXPECT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), -EINVAL);
@@ -162,13 +173,15 @@ static std::vector<std::byte> make_blob_payload(uint32_t vsize, uint32_t arr_siz
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
     std::vector<std::byte> buf(total, std::byte{0});
-    auto* p = reinterpret_cast<effect_param_t*>(buf.data());
-    p->psize = psize;
-    p->vsize = vsize;
+    effect_param_t header{};
+    header.psize = psize;
+    header.vsize = vsize;
+    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
     int32_t param = 200;  // any param id that maps to blob dispatch
-    std::memcpy(p->data, &param, sizeof(int32_t));
+    std::memcpy(buf.data() + sizeof(effect_param_t), &param, sizeof(int32_t));
     // Write the arr_size claim as the first uint32_t of the value region
-    std::memcpy(p->data + aligned_psize, &arr_size_claim, sizeof(uint32_t));
+    std::memcpy(buf.data() + sizeof(effect_param_t) + aligned_psize,
+                &arr_size_claim, sizeof(uint32_t));
     return buf;
 }
 
@@ -221,13 +234,13 @@ TEST(ParameterRouter_HandleSet, Blob256_ArrSizeMaxUint32_ReturnsEINVAL) {
 // ============================================================
 
 class ParameterRouterGetTest : public ::testing::Test {
-protected:
+public:
     ViPER viper;
     uint64_t last_frames = 0;
     std::array<std::byte, kReplyBufSize> reply_buf{};
 
     int32_t read_reply_int32() const {
-        const auto* rp = reinterpret_cast<const effect_param_t*>(reply_buf.data());
+        const auto* rp = std::launder(reinterpret_cast<const effect_param_t*>(reply_buf.data()));
         int32_t val = 0;
         std::memcpy(&val,
                     rp->data + rp->ValueOffset(),
@@ -235,7 +248,7 @@ protected:
         return val;
     }
     uint32_t read_reply_uint32() const {
-        const auto* rp = reinterpret_cast<const effect_param_t*>(reply_buf.data());
+        const auto* rp = std::launder(reinterpret_cast<const effect_param_t*>(reply_buf.data()));
         uint32_t val = 0;
         std::memcpy(&val,
                     rp->data + rp->ValueOffset(),
