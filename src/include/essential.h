@@ -760,20 +760,7 @@ struct buffer_provider_t {
     void *cookie;                     // for use by client of buffer provider functions
 };
 
-// The buffer_config_s structure specifies the input or output audio format
-// to be used by the effect engine. It is part of the effect_config_t
-// structure that defines both input and output buffer configurations and is
-// passed by the EFFECT_CMD_SET_CONFIG or EFFECT_CMD_SET_CONFIG_REVERSE command.
-struct buffer_config_t {
-    audio_buffer_t buffer; // buffer for use by process() function if not passed explicitly
-    uint32_t sampling_rate; // sampling rate
-    uint32_t channels;      // channel mask (see audio_channel_mask_t in audio.h)
-    buffer_provider_t buffer_provider; // buffer provider
-    uint8_t format;                    // Audio format (see audio_format_t in audio.h)
-    uint8_t access_mode; // read/write or accumulate in buffer (effect_buffer_access_e)
-    uint16_t mask;       // indicates which of the above fields is valid
-};
-// Values for "accessMode" field of buffer_config_t:
+// Values for the access_mode field of buffer_config_t:
 //   overwrite, read only, accumulate (read/modify/write)
 enum class effect_buffer_access_e : uint8_t {
     WRITE      = 0,
@@ -784,6 +771,20 @@ enum class effect_buffer_access_e : uint8_t {
 inline constexpr auto EFFECT_BUFFER_ACCESS_WRITE      = effect_buffer_access_e::WRITE;
 inline constexpr auto EFFECT_BUFFER_ACCESS_READ       = effect_buffer_access_e::READ;
 inline constexpr auto EFFECT_BUFFER_ACCESS_ACCUMULATE = effect_buffer_access_e::ACCUMULATE;
+
+// The buffer_config_t structure specifies the input or output audio format
+// to be used by the effect engine. It is part of the effect_config_t
+// structure that defines both input and output buffer configurations and is
+// passed by the EFFECT_CMD_SET_CONFIG or EFFECT_CMD_SET_CONFIG_REVERSE command.
+struct buffer_config_t {
+    audio_buffer_t buffer; // buffer for use by process() function if not passed explicitly
+    uint32_t sampling_rate; // sampling rate
+    uint32_t channels;      // channel mask (see audio_channel_mask_t in audio.h)
+    buffer_provider_t buffer_provider; // buffer provider
+    uint8_t format;                       // Audio format (see audio_format_t in audio.h)
+    effect_buffer_access_e access_mode{}; // read/write or accumulate in buffer
+    uint16_t mask;                        // indicates which of the above fields is valid
+};
 
 // effect_config_s structure describes the format of the pCmdData argument of EFFECT_CMD_SET_CONFIG
 // command to configure audio parameters and buffers for effect engine input and output.

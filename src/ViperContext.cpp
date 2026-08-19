@@ -177,7 +177,7 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
         config_.input_cfg.sampling_rate,
         config_.input_cfg.channels,
         config_.input_cfg.format,
-        config_.input_cfg.access_mode
+        static_cast<uint8_t>(config_.input_cfg.access_mode)
     );
     VIPER_LOGD(
         "output: frames=%zu rate=%u channels=0x%x format=%u access=%u",
@@ -185,7 +185,7 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
         config_.output_cfg.sampling_rate,
         config_.output_cfg.channels,
         config_.output_cfg.format,
-        config_.output_cfg.access_mode
+        static_cast<uint8_t>(config_.output_cfg.access_mode)
     );
 
     if (config_.input_cfg.buffer.frame_count != config_.output_cfg.buffer.frame_count) {
