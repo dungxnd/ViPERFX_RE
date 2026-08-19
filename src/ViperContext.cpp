@@ -114,9 +114,15 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
     VIPER_LOGI("Input and output configuration verified.");
     SetDisableReason(DisableReason::NONE);
 
-    // Processing buffer
-    buffer_.resize(config_.input_cfg.buffer.frame_count * 2);
-    buffer_frame_count_ = config_.input_cfg.buffer.frame_count;
+    // Processing buffer — never shrink below kDefaultMaxFrames.
+    // The constructor pre-allocates kDefaultMaxFrames * 2. If SET_CONFIG arrives
+    // with a smaller frame_count (e.g. 192), shrinking would cause Process() to
+    // reject larger bursts that arrive later (frame_count > buffer_.size() / 2).
+    const size_t new_frame_count = config_.input_cfg.buffer.frame_count;
+    if (new_frame_count * 2 > buffer_.size()) {
+        buffer_.resize(new_frame_count * 2, 0.0f);
+    }
+    buffer_frame_count_ = new_frame_count;
 
     // ViPER
     viper_.SetSamplingRate(config_.input_cfg.sampling_rate);

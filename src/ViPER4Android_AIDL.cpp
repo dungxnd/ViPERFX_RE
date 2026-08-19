@@ -70,7 +70,7 @@ using DataMQ = ::android::AidlMessageQueue<
 
 // ---------------------------------------------------------------------------
 // Effect UUIDs
-//   type : 7261726f-6d75-7369-6364-28e2fd3ac39e  (vendor/extension)
+//   type : 7261676f-6d75-7369-6364-28e2fd3ac39e  (vendor/extension)
 //   impl : 90380da3-8536-4744-a6a3-5731970e640f  (ViPER4Android)
 // ---------------------------------------------------------------------------
 // NOTE: AudioUuid::node is std::vector<uint8_t> in the AIDL NDK backend, which
@@ -78,7 +78,7 @@ using DataMQ = ::android::AidlMessageQueue<
 // constexpr/inline-constexpr object cannot retain a heap allocation past
 // compile-time evaluation, so these must stay `const` (not `constexpr`).
 const AudioUuid kTypeUuid = {
-    static_cast<int32_t>(0x7261726f),
+    static_cast<int32_t>(0x7261676f),
     static_cast<int16_t>(0x6d75),
     static_cast<int16_t>(0x7369),
     static_cast<int16_t>(0x6364),

@@ -16,7 +16,11 @@ allow hal_audio_default ashmem_libcutils_device chr_file { read write open ioctl
 # Audioserver: same library loading rights
 allow audioserver vendor_file file { read getattr open execute execute_no_trans map }
 allow audioserver same_process_hal_file file { read getattr open execute execute_no_trans map }
-allow audioserver hal_audio_default process { execmem }
+# audioserver needs execmem for JIT/DSP effect loading.
+# Correct form: self:process — NOT hal_audio_default:process (that is a
+# cross-domain process rule with no practical effect and may be rejected).
+# Confirmed by AOSP platform/system/sepolicy: allow audioserver self:process execmem
+allow audioserver self:process { execmem }
 
 # Binder IPC between audioserver and hal_audio_default (AIDL HAL path)
 allow audioserver hal_audio_default binder { call transfer }

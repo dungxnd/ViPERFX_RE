@@ -225,7 +225,7 @@ clean:
 
 format:
 	@echo "Formatting code with clang-format..."
-	@find src/ -name '*.[ch]' -o -name '*.cpp' | xargs clang-format -i
+	@find src/ tests/ aidl-shims/ \( -name '*.h' -o -name '*.cpp' -o -name '*.c' \) -type f | xargs clang-format -i
 
 help:
 	@echo "ViPERFX_RE Build System"

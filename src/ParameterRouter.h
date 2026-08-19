@@ -98,8 +98,15 @@ inline int32_t read_int32(std::span<const std::byte> s, size_t byte_offset = 0) 
         }
         case 256:
         case 1024: {
+            if (value_bytes.size() < sizeof(uint32_t)) return std::unexpected(-EINVAL);
             uint32_t arr_size;
             std::memcpy(&arr_size, value_bytes.data(), sizeof(uint32_t));
+            // Bounds check: arr_size must not exceed the actual payload that follows
+            // the leading uint32_t header.  A corrupted or malicious packet could
+            // carry an arr_size > remaining bytes, causing the DSP to read garbage.
+            if (arr_size > value_bytes.size() - sizeof(uint32_t)) {
+                return std::unexpected(-EINVAL);
+            }
             // const_cast required: DispatchRawParam takes signed char* (non-const legacy API).
             // The data is not modified; const_cast is the minimal necessary concession.
             auto* arr = const_cast<signed char*>(
@@ -109,9 +116,16 @@ inline int32_t read_int32(std::span<const std::byte> s, size_t byte_offset = 0) 
             return {};
         }
         case 8192: {
+            if (value_bytes.size() < sizeof(int32_t) + sizeof(uint32_t)) {
+                return std::unexpected(-EINVAL);
+            }
             const int32_t value1 = detail::read_int32(value_bytes);
             uint32_t arr_size;
             std::memcpy(&arr_size, value_bytes.data() + sizeof(int32_t), sizeof(uint32_t));
+            // Same bounds check as the 256/1024 cases above.
+            if (arr_size > value_bytes.size() - sizeof(int32_t) - sizeof(uint32_t)) {
+                return std::unexpected(-EINVAL);
+            }
             auto* arr = const_cast<signed char*>(
                 reinterpret_cast<const signed char*>(
                     value_bytes.data() + sizeof(int32_t) + sizeof(uint32_t))

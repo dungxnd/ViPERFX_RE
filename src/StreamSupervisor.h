@@ -41,7 +41,11 @@ struct ScopedDenormalFlusher {
     ScopedDenormalFlusher(ScopedDenormalFlusher&&) = delete;
     ScopedDenormalFlusher& operator=(ScopedDenormalFlusher&&) = delete;
 };
-#elif defined(__x86_64__) || defined(_M_X64)
+// 32-bit x86 (i386/IA-32) Android emulator targets also expose SSE/MXCSR —
+// every x86 CPU shipping since Pentium III supports it, and Android's emulator
+// requires SSE2-capable hosts.  Include __i386__ / _M_IX86 in this branch so
+// they get the real FTZ|DAZ flush rather than falling to the no-op below.
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 struct ScopedDenormalFlusher {
     unsigned int orig_mxcsr;
     ScopedDenormalFlusher() noexcept {

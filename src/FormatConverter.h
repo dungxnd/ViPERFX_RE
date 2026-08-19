@@ -33,14 +33,17 @@ inline void FloatToFloat(std::span<float> dst, std::span<const float> src, bool 
 
 template <std::integral T, std::integral U>
 void FloatToPcm(std::span<T> dst, std::span<const float> src, bool accumulate) noexcept {
-    constexpr T max_val = std::numeric_limits<T>::max();
-    constexpr T min_val = std::numeric_limits<T>::min();
+    // Use double to avoid float precision round-up UB on int32_t:
+    // static_cast<float>(INT32_MAX) == 2147483648.0f (rounds up), so
+    // lrintf(1.0f * 2147483648.0f) = 2147483648L, and casting that to int32_t
+    // is signed overflow — undefined behavior.  double has enough mantissa bits
+    // to represent INT32_MAX exactly, so the clamp below is tight.
+    constexpr double max_val = static_cast<double>(std::numeric_limits<T>::max());
+    constexpr double min_val = static_cast<double>(std::numeric_limits<T>::min());
 
     for (auto [d, s] : std::views::zip(dst, src)) {
-        // Pre-clamp to [-1, 1] before scaling: lrintf(s * max_val) is UB when
-        // s * max_val overflows the integer range (e.g. s=2.5f from DSP gain).
-        const float clamped = std::clamp(s, -1.0f, 1.0f);
-        const T pcm = static_cast<T>(std::lrintf(clamped * static_cast<float>(max_val)));
+        const double scaled  = std::clamp(static_cast<double>(s), -1.0, 1.0) * max_val;
+        const T pcm = static_cast<T>(std::clamp(std::nearbyint(scaled), min_val, max_val));
         if (accumulate) {
             const U temp = static_cast<U>(d) + pcm;
             d = static_cast<T>(

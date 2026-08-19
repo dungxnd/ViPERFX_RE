@@ -151,6 +151,72 @@ TEST(ParameterRouter_HandleSet, UnknownValueSize_ReturnsEINVAL) {
 }
 
 // ============================================================
+// HandleSet — blob arr_size bounds checks (1C fix)
+// ============================================================
+
+// Helper: build a vsize=256 payload where the leading uint32_t arr_size
+// claims more bytes than the remaining span (potential OOB into DSP).
+static std::vector<std::byte> make_blob_payload(uint32_t vsize, uint32_t arr_size_claim) {
+    constexpr uint32_t psize = sizeof(int32_t);
+    constexpr uint32_t aligned_psize = 4;
+    const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
+
+    std::vector<std::byte> buf(total, std::byte{0});
+    auto* p = reinterpret_cast<effect_param_t*>(buf.data());
+    p->psize = psize;
+    p->vsize = vsize;
+    int32_t param = 200;  // any param id that maps to blob dispatch
+    std::memcpy(p->data, &param, sizeof(int32_t));
+    // Write the arr_size claim as the first uint32_t of the value region
+    std::memcpy(p->data + aligned_psize, &arr_size_claim, sizeof(uint32_t));
+    return buf;
+}
+
+TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExceedsPayload_ReturnsEINVAL) {
+    ViPER viper;
+    int32_t reply = -1;
+    // arr_size=252 is the max that fits (256 - 4); claim 253 to trigger bounds check
+    auto buf = make_blob_payload(256, 253);
+    const auto* p = reinterpret_cast<const effect_param_t*>(buf.data());
+    auto res = ParameterRouter::HandleSet(
+        static_cast<uint32_t>(buf.size()), p, &reply, viper
+    );
+    EXPECT_FALSE(res.has_value());
+    EXPECT_EQ(res.error(), -EINVAL);
+}
+
+TEST(ParameterRouter_HandleSet, Blob256_ArrSizeExact_Succeeds) {
+    ViPER viper;
+    int32_t reply = -1;
+    // arr_size=252 exactly fits (256 - sizeof(uint32_t) = 252)
+    auto buf = make_blob_payload(256, 252);
+    const auto* p = reinterpret_cast<const effect_param_t*>(buf.data());
+    auto res = ParameterRouter::HandleSet(
+        static_cast<uint32_t>(buf.size()), p, &reply, viper
+    );
+    // May succeed or fail depending on DSP dispatch — just must not be a bounds error
+    // i.e. the bounds check itself must pass (not return EINVAL from the guard)
+    if (!res.has_value()) {
+        EXPECT_NE(res.error(), -EINVAL);  // any other error is fine; EINVAL means wrong guard fired
+    }
+}
+
+TEST(ParameterRouter_HandleSet, Blob256_ArrSizeMaxUint32_ReturnsEINVAL) {
+    ViPER viper;
+    int32_t reply = -1;
+    // Malicious: arr_size = UINT32_MAX — must be caught before it reaches DSP
+    auto buf = make_blob_payload(256, 0xFFFFFFFFu);
+    const auto* p = reinterpret_cast<const effect_param_t*>(buf.data());
+    auto res = ParameterRouter::HandleSet(
+        static_cast<uint32_t>(buf.size()), p, &reply, viper
+    );
+    EXPECT_FALSE(res.has_value());
+    EXPECT_EQ(res.error(), -EINVAL);
+}
+
+
+
+// ============================================================
 // HandleGet — GET_PARAM queries
 // ============================================================
 
