@@ -94,43 +94,6 @@ jobs:
           path: out/libv4a_re_${{ matrix.abi }}.so
           retention-days: 7
 
-  # ── Non-AIDL: package module (no recompile) ───────────────────────────────
-  package:
-    name: Package non-AIDL module
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v7
-
-      - name: Set version variables
-        id: ver
-        run: |
-          echo "name=$(grep '^version=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
-          echo "code=$(grep '^versionCode=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
-
-      - name: Download pre-built .so artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: libv4a_re-*-${{ steps.ver.outputs.name }}
-          path: out/
-          merge-multiple: true
-
-      - name: Prepare module directory
-        run: |
-          make module \
-            VERSION_NAME="${{ steps.ver.outputs.name }}" \
-            VERSION_CODE="${{ steps.ver.outputs.code }}" \
-            SKIP_LIBS=1
-
-      - name: Upload module artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ViPER4Android-RE-${{ steps.ver.outputs.name }}
-          path: out/magisk_module/
-          retention-days: 30
-
   # ── AIDL: generate stubs once, then compile both ABIs in parallel ─────────
   aidl-gen:
     name: Generate AIDL stubs
@@ -303,11 +266,11 @@ jobs:
           path: out/libv4a_aidl_${{ matrix.abi }}.so
           retention-days: 7
 
-  # ── AIDL: package module (no recompile) ──────────────────────────────────
-  package-aidl:
-    name: Package AIDL module
+  # ── Package module (auto-detect; needs both non-AIDL and AIDL .so files) ──
+  package:
+    name: Package module
     runs-on: ubuntu-latest
-    needs: build-aidl
+    needs: [build, build-aidl]
 
     steps:
       - name: Checkout source
@@ -319,6 +282,13 @@ jobs:
           echo "name=$(grep '^version=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
           echo "code=$(grep '^versionCode=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
+      - name: Download pre-built non-AIDL .so artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: libv4a_re-*-${{ steps.ver.outputs.name }}
+          path: out/
+          merge-multiple: true
+
       - name: Download pre-built AIDL .so artifacts
         uses: actions/download-artifact@v8
         with:
@@ -326,25 +296,25 @@ jobs:
           path: out/
           merge-multiple: true
 
-      - name: Prepare AIDL module directory
+      - name: Prepare module directory
         run: |
-          make module-aidl \
+          make module-combined \
             VERSION_NAME="${{ steps.ver.outputs.name }}" \
             VERSION_CODE="${{ steps.ver.outputs.code }}" \
             SKIP_LIBS=1
 
-      - name: Upload AIDL module artifact
+      - name: Upload module artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ViPER4Android-RE-AIDL-${{ steps.ver.outputs.name }}
-          path: out/magisk_module_aidl/
+          name: ViPER4Android-RE-${{ steps.ver.outputs.name }}
+          path: out/magisk_module_combined/
           retention-days: 30
 
   # ── Release ───────────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [package, package-aidl]
+    needs: [package]
     if: github.event_name != 'pull_request'
 
     permissions:
@@ -369,27 +339,19 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download non-AIDL module directory
+      - name: Download module directory
         if: steps.check.outputs.skip == 'false'
         uses: actions/download-artifact@v8
         with:
           name: ViPER4Android-RE-${{ steps.check.outputs.version }}
           path: dist/module/
 
-      - name: Download AIDL module directory
-        if: steps.check.outputs.skip == 'false'
-        uses: actions/download-artifact@v8
-        with:
-          name: ViPER4Android-RE-AIDL-${{ steps.check.outputs.version }}
-          path: dist/module-aidl/
-
-      - name: Repackage as flashable zips
+      - name: Repackage as flashable zip
         if: steps.check.outputs.skip == 'false'
         run: |
           cd dist/module && zip -r9 ../ViPER4Android-RE-${{ steps.check.outputs.version }}.zip . && cd ../..
-          cd dist/module-aidl && zip -r9 ../ViPER4Android-RE-AIDL-${{ steps.check.outputs.version }}.zip . && cd ../..
 
-      - name: Generate update.json files
+      - name: Generate update.json
         if: steps.check.outputs.skip == 'false'
         run: |
           VERSION="${{ steps.check.outputs.version }}"
@@ -404,16 +366,7 @@ jobs:
             "changelog": "${CHANGELOG}"
           }
           EOF
-          cat > dist/update-aidl.json <<EOF
-          {
-            "version": "${VERSION}-aidl",
-            "versionCode": ${VERSION_CODE},
-            "zipUrl": "https://github.com/${REPO}/releases/download/${VERSION}/ViPER4Android-RE-AIDL-${VERSION}.zip",
-            "changelog": "${CHANGELOG}"
-          }
-          EOF
           echo "--- update.json ---" && cat dist/update.json
-          echo "--- update-aidl.json ---" && cat dist/update-aidl.json
 
       - name: Collect changes from ViPERFX_RE and ViPERDSP submodule
         if: steps.check.outputs.skip == 'false'
@@ -541,20 +494,14 @@ jobs:
           ## ViPER4Android Reverse Engineered VERSION_PLACEHOLDER
 
           ### Installation
-          Flash the zip matching your device's audio HAL:
-          - **`ViPER4Android-RE-*.zip`** — non-AIDL (Android ≤ 14 / legacy HAL)
-          - **`ViPER4Android-RE-AIDL-*.zip`** — AIDL (Android 13+ / API 33+)
-
-          Not sure which? Run: `adb shell ps -A | grep "audio.*aidl"`
-          If you see output, use the AIDL zip. Otherwise use the non-AIDL zip.
+          Flash **`ViPER4Android-RE-*.zip`** — auto-detects AIDL or legacy audio HAL at install time.
 
           BODY_EOF
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" dist/release_body.md
           cat dist/changelog.md >> dist/release_body.md
 
-          # Patch the changelog field in both update.json files to point at the raw asset
-          jq --arg url "$CHANGELOG_URL" '.changelog = $url' dist/update.json      > dist/update.json.tmp      && mv dist/update.json.tmp      dist/update.json
-          jq --arg url "$CHANGELOG_URL" '.changelog = $url' dist/update-aidl.json > dist/update-aidl.json.tmp && mv dist/update-aidl.json.tmp dist/update-aidl.json
+          # Patch the changelog field in update.json to point at the raw asset
+          jq --arg url "$CHANGELOG_URL" '.changelog = $url' dist/update.json > dist/update.json.tmp && mv dist/update.json.tmp dist/update.json
 
       - name: Publish release
         if: steps.check.outputs.skip == 'false'
@@ -567,6 +514,5 @@ jobs:
           files: |
             dist/*.zip
             dist/update.json
-            dist/update-aidl.json
             dist/changelog.md
           body_path: dist/release_body.md
