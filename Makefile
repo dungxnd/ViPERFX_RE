@@ -180,6 +180,7 @@ module: $(if $(SKIP_LIBS),,libs aidl-libs)
 	@cp $(MODULE_DIR)/module.prop $(MODULE_OUT)/module.prop
 	@cp $(MODULE_DIR)/customize.sh $(MODULE_OUT)/
 	@cp $(MODULE_DIR)/post-fs-data.sh $(MODULE_OUT)/post-fs-data.sh
+	@cp $(MODULE_DIR)/post-mount.sh $(MODULE_OUT)/post-mount.sh 2>/dev/null || true
 	@cp $(MODULE_DIR)/uninstall.sh $(MODULE_OUT)/
 	@cp $(MODULE_DIR)/LICENSE $(MODULE_OUT)/
 	@cp $(MODULE_DIR)/sepolicy.rule $(MODULE_OUT)/sepolicy.rule 2>/dev/null || true
