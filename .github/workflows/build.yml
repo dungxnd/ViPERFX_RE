@@ -401,15 +401,21 @@ jobs:
 
           # ── ViPERDSP: fetch commit log via GitHub API
           if [ -n "$PREV_DSP_SHA" ] && [ "$PREV_DSP_SHA" != "$CUR_DSP_SHA" ]; then
+            # Submodule pointer changed: show only the new commits
             DSP_LOG=$(gh api "repos/dungxnd/ViPERDSP/compare/${PREV_DSP_SHA}...${CUR_DSP_SHA}" \
               --jq '.commits[] | "- \(.commit.message | split("\n")[0]) (\(.sha[:7])) by \(.commit.author.name)"' \
               2>/dev/null || true)
-          else
+            [ -z "$DSP_LOG" ] && DSP_LOG="(no new ViPERDSP commits)"
+          elif [ -z "$PREV_TAG" ]; then
+            # First release ever: show recent DSP history as context
             DSP_LOG=$(gh api "repos/dungxnd/ViPERDSP/commits?sha=${CUR_DSP_SHA}&per_page=20" \
               --jq '.[] | "- \(.commit.message | split("\n")[0]) (\(.sha[:7])) by \(.commit.author.name)"' \
               2>/dev/null || true)
+            [ -z "$DSP_LOG" ] && DSP_LOG="(no ViPERDSP commits found)"
+          else
+            # Submodule pointer unchanged: no DSP changes in this release
+            DSP_LOG="(no changes — submodule pinned to same commit as previous release)"
           fi
-          [ -z "$DSP_LOG" ] && DSP_LOG="(no new ViPERDSP commits)"
 
           CONTENT_FILE=$(mktemp)
           cat > "$CONTENT_FILE" <<'CONTENT_EOF'
