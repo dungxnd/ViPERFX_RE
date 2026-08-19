@@ -29,8 +29,10 @@ USE_AIDL=false
 LEGACY_CONFIRMED=false
 
 # ── Signal 1: Negative guard — legacy stack evidence ─────────────────────────
-# If the device has a legacy effects config or legacy proxy lib, it is almost
-# certainly running a legacy audio stack regardless of Android version.
+# Presence of legacy effects config / libeffectproxy.so is a soft legacy signal.
+# It is NOT a hard block: Android 14/15/16 AIDL-only devices (Pixel 8+, Snapdragon
+# 8 Gen 3 OEMs) keep audio_effects.xml for 32-bit vendor blob backward compat while
+# running a pure AIDL audio HAL. VINTF manifest (Signal 2b) can override this guess.
 if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
    ls /vendor/etc/audio_effects.xml 1>/dev/null 2>&1 || \
    ls /vendor/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1 || \
@@ -38,8 +40,21 @@ if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
   LEGACY_CONFIRMED=true
 fi
 
+# ── Signal 1b: VINTF override ─────────────────────────────────────────────────
+# If Signal 1 fired but the VINTF manifest (authoritative OEM SoC declaration)
+# explicitly lists the AIDL audio effect interface, the legacy XML files are kept
+# only for 32-bit compat — the device runs a true AIDL stack. Override the guess.
+if $LEGACY_CONFIRMED; then
+  if grep -rq "android.hardware.audio.effect" /vendor/etc/vintf/ 2>/dev/null || \
+     grep -rq "android.hardware.audio.effect" /odm/etc/vintf/ 2>/dev/null; then
+    ui_print "    ! VINTF declares AIDL effect iface — overriding legacy XML signal"
+    LEGACY_CONFIRMED=false
+    USE_AIDL=true
+  fi
+fi
+
 # ── Signal 2: Static FS — AIDL-positive ──────────────────────────────────────
-if ! $LEGACY_CONFIRMED; then
+if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
   # 2a. AIDL HAL binaries in vendor or APEX
   if ls /vendor/bin/hw/*audio*aidl* 1>/dev/null 2>&1 || \
      ls /apex/com.android.hardware.audio/bin/hw/*audio* 1>/dev/null 2>&1; then

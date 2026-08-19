@@ -30,6 +30,8 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <pthread.h>
+#include <sched.h>
 #include <thread>
 #include <vector>
 
@@ -346,12 +348,12 @@ private:
     void stopWorkerLocked(std::unique_lock<std::mutex>& lock) {
         if (!mWorkerThread.joinable()) return;
 
-        // Signal cooperative stop; wake the worker if blocked on EventFlag.
+        // Signal cooperative stop; then issue a FUTEX_WAKE via EventFlag::wake()
+        // so the worker unblocks immediately instead of waiting up to 100ms for
+        // the EventFlag::wait() timeout to expire.
         mWorkerThread.request_stop();
         if (mEventFlag) {
-            // Unconditionally set any bit so the EventFlag::wait() returns.
-            static_cast<std::atomic<uint32_t>*>(
-                    static_cast<void *>(mInputMQ->getEventFlagWord()))->fetch_or(1u, std::memory_order_release);
+            mEventFlag->wake(0xFFFFFFFF);
         }
 
         // Release mutex before joining: the worker may need the mutex to finish.
@@ -362,6 +364,18 @@ private:
 
     void workerLoop(std::stop_token stopToken) {
         ALOGD("worker: started");
+
+        // Boost to SCHED_FIFO priority 3 — same level as standard Android audio
+        // HAL worker threads — to avoid preemption-induced buffer underruns under
+        // heavy UI or game load. Fails gracefully (non-root builds) without abort.
+        {
+            struct sched_param sp{};
+            sp.sched_priority = 3;
+            if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
+                ALOGD("worker: SCHED_FIFO unavailable, continuing at SCHED_OTHER");
+            }
+        }
+
         constexpr size_t kChannels = 2;
 
         while (!stopToken.stop_requested()) {
@@ -385,7 +399,14 @@ private:
             const size_t frames = avail / kChannels;
             audio_buffer_t inBuf  = { .frame_count = frames, .f32 = mWorkerBuf.data() };
             audio_buffer_t outBuf = { .frame_count = frames, .f32 = mWorkerBuf.data() };
-            (void)mContext.Process(&inBuf, &outBuf);
+            // Hold mMutex across Process() to serialise against setParameter()
+            // (Binder thread) which modifies DSP state under the same lock.
+            // The worker runs at SCHED_FIFO 3; the Binder thread at SCHED_OTHER,
+            // so priority inversion is not a concern in the current threading model.
+            {
+                std::unique_lock lock(mMutex);
+                (void)mContext.Process(&inBuf, &outBuf);
+            }
 
             // Write processed samples to output MQ
             mOutputMQ->write(mWorkerBuf.data(), avail);
