@@ -60,7 +60,8 @@ target_compile_options(ViPERDSP_host PRIVATE
     -Wno-parentheses
 )
 # Host: no Android log, no ARM-specific asm guards already handled in log.h
-target_compile_definitions(ViPERDSP_host PUBLIC HOST_BUILD=1)
+# _USE_MATH_DEFINES: required on MSVC/MinGW to expose M_PI from <cmath>.
+target_compile_definitions(ViPERDSP_host PUBLIC HOST_BUILD=1 _USE_MATH_DEFINES)
 
 # ---------------------------------------------------------------------------
 # ViperContext object library (shared by integration tests)
@@ -110,3 +111,7 @@ viper_test(test_format_converter)
 viper_test(test_parameter_router)
 viper_test(test_stream_supervisor)
 viper_test(test_viper_context)
+viper_test(test_dsp_effects)
+# test_dsp_effects includes effect headers directly (e.g. "effects/SoftwareLimiter.h"),
+# so it needs the ViPERDSP/viper/ directory on its include path.
+target_include_directories(test_dsp_effects PRIVATE "${VIPERDSP_DIR}/viper")
