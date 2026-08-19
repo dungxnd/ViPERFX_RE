@@ -1,0 +1,148 @@
+name: Unit Tests (Host)
+
+# Run on every push/PR that touches source code, tests, or CI config.
+# Intentionally separate from build.yml (Android NDK cross-compile) so
+# host tests execute fast without waiting for NDK setup or AIDL gen.
+
+on:
+  push:
+    branches: ["dev", "main", "*"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "ViPERDSP/**"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: ["dev", "main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "ViPERDSP/**"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Host unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        # macOS runner is optional — uncomment to add cross-platform coverage:
+        # os: [ubuntu-latest, macos-latest]
+
+    steps:
+      # ── 1. Checkout (with submodules so ViPERDSP is available) ──────────────
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      # ── 2. Install build dependencies ────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ \
+            libgtest-dev  # fallback; FetchContent in CMakeLists is primary
+
+      # ── 3. Configure ─────────────────────────────────────────────────────────
+      # Build type: Debug for faster compile; assertions and sanitizers fire.
+      - name: Configure CMake
+        working-directory: tests
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      # ── 4. Build ──────────────────────────────────────────────────────────────
+      - name: Build tests
+        working-directory: tests/build
+        run: ninja -j$(nproc)
+
+      # ── 5. Run tests via CTest ─────────────────────────────────────────────
+      - name: Run tests
+        working-directory: tests/build
+        env:
+          ASAN_OPTIONS: "halt_on_error=1:detect_leaks=1"
+          UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+        run: |
+          ctest \
+            --output-on-failure \
+            --parallel $(nproc) \
+            --timeout 120 \
+            -T Test \
+            --output-junit test-results.xml
+
+      # ── 6. Upload test results ────────────────────────────────────────────────
+      - name: Upload JUnit test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: tests/build/test-results.xml
+          retention-days: 14
+
+      # ── 7. Publish test summary in PR/push UI ─────────────────────────────────
+      - name: Publish test summary
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: "GTest results (${{ matrix.os }})"
+          path: tests/build/test-results.xml
+          reporter: java-junit
+          fail-on-error: true
+
+  # ── Clang-Tidy static analysis (no-compile lint pass) ─────────────────────
+  lint:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+    # Only run on PRs to keep push feedback fast
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install clang + clang-tidy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 clang-tidy-18 cmake ninja-build
+
+      - name: Generate compile_commands.json
+        working-directory: tests
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Run clang-tidy on src/
+        run: |
+          FILES=$(find ViPERFX_RE/src -name '*.cpp' -o -name '*.h' | grep -v 'aidl')
+          clang-tidy-18 \
+            -p tests/build \
+            --checks="-*,clang-analyzer-*,cppcoreguidelines-*,modernize-*,performance-*,readability-*,-modernize-use-trailing-return-type" \
+            --warnings-as-errors="*" \
+            $FILES 2>&1 | tee lint-output.txt || true
+          # Report but don't block CI for tidy; failures show up as annotations.
+
+      - name: Upload lint output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-output
+          path: lint-output.txt
+          retention-days: 7
