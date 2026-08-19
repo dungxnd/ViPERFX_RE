@@ -1,7 +1,12 @@
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
+#include <compare>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <string_view>
+
+// C++23 modernized: inline constexpr replaces macros, C++ headers, defaulted comparisons
 
 // Source: https://android.googlesource.com/platform/system/media/+/master/audio/include/system
 
@@ -11,17 +16,20 @@ typedef struct effect_uuid_s {
     uint16_t time_hi_and_version;
     uint16_t clock_seq;
     uint8_t node[6];
+
+    constexpr auto operator<=>(const effect_uuid_s &) const noexcept = default;
+    constexpr bool operator==(const effect_uuid_s &) const noexcept = default;
 } effect_uuid_t;
 
 // Maximum length of character strings in structures defines by this API.
-#define EFFECT_STRING_LEN_MAX 64
+inline constexpr size_t EFFECT_STRING_LEN_MAX = 64;
 
 // NULL UUID definition (matches SL_IID_NULL_)
 #define EFFECT_UUID_INITIALIZER                                                          \
     {0xec7178ec, 0xe5e1, 0x4432, 0xa3f4, {0x46, 0x57, 0xe6, 0x79, 0x52, 0x10}}
-static const effect_uuid_t EFFECT_UUID_NULL_ = EFFECT_UUID_INITIALIZER;
-static const effect_uuid_t *const EFFECT_UUID_NULL = &EFFECT_UUID_NULL_;
-static const char *const EFFECT_UUID_NULL_STR = "ec7178ec-e5e1-4432-a3f4-4657e6795210";
+inline constexpr effect_uuid_t EFFECT_UUID_NULL_ = EFFECT_UUID_INITIALIZER;
+inline constexpr const effect_uuid_t *EFFECT_UUID_NULL = &EFFECT_UUID_NULL_;
+inline constexpr std::string_view EFFECT_UUID_NULL_STR = "ec7178ec-e5e1-4432-a3f4-4657e6795210";
 
 // The effect descriptor contains necessary information to facilitate the enumeration of the effect
 // engines present in a library.
@@ -110,104 +118,106 @@ typedef struct effect_descriptor_s {
 //  +---------------------------+-----------+-----------------------------------
 
 // Insert mode
-#define EFFECT_FLAG_TYPE_SHIFT 0
-#define EFFECT_FLAG_TYPE_SIZE 3
-#define EFFECT_FLAG_TYPE_MASK                                                            \
-    (((1 << EFFECT_FLAG_TYPE_SIZE) - 1) << EFFECT_FLAG_TYPE_SHIFT)
-#define EFFECT_FLAG_TYPE_INSERT (0 << EFFECT_FLAG_TYPE_SHIFT)
-#define EFFECT_FLAG_TYPE_AUXILIARY (1 << EFFECT_FLAG_TYPE_SHIFT)
-#define EFFECT_FLAG_TYPE_REPLACE (2 << EFFECT_FLAG_TYPE_SHIFT)
-#define EFFECT_FLAG_TYPE_PRE_PROC (3 << EFFECT_FLAG_TYPE_SHIFT)
-#define EFFECT_FLAG_TYPE_POST_PROC (4 << EFFECT_FLAG_TYPE_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_TYPE_SHIFT = 0;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_SIZE = 3;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_MASK =
+    ((1U << EFFECT_FLAG_TYPE_SIZE) - 1U) << EFFECT_FLAG_TYPE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_INSERT = 0U << EFFECT_FLAG_TYPE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_AUXILIARY = 1U << EFFECT_FLAG_TYPE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_REPLACE = 2U << EFFECT_FLAG_TYPE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_PRE_PROC = 3U << EFFECT_FLAG_TYPE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_TYPE_POST_PROC = 4U << EFFECT_FLAG_TYPE_SHIFT;
 
 // Insert preference
-#define EFFECT_FLAG_INSERT_SHIFT (EFFECT_FLAG_TYPE_SHIFT + EFFECT_FLAG_TYPE_SIZE)
-#define EFFECT_FLAG_INSERT_SIZE 3
-#define EFFECT_FLAG_INSERT_MASK                                                          \
-    (((1 << EFFECT_FLAG_INSERT_SIZE) - 1) << EFFECT_FLAG_INSERT_SHIFT)
-#define EFFECT_FLAG_INSERT_ANY (0 << EFFECT_FLAG_INSERT_SHIFT)
-#define EFFECT_FLAG_INSERT_FIRST (1 << EFFECT_FLAG_INSERT_SHIFT)
-#define EFFECT_FLAG_INSERT_LAST (2 << EFFECT_FLAG_INSERT_SHIFT)
-#define EFFECT_FLAG_INSERT_EXCLUSIVE (3 << EFFECT_FLAG_INSERT_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_INSERT_SHIFT = EFFECT_FLAG_TYPE_SHIFT + EFFECT_FLAG_TYPE_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_INSERT_SIZE = 3;
+inline constexpr uint32_t EFFECT_FLAG_INSERT_MASK =
+    ((1U << EFFECT_FLAG_INSERT_SIZE) - 1U) << EFFECT_FLAG_INSERT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INSERT_ANY = 0U << EFFECT_FLAG_INSERT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INSERT_FIRST = 1U << EFFECT_FLAG_INSERT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INSERT_LAST = 2U << EFFECT_FLAG_INSERT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INSERT_EXCLUSIVE = 3U << EFFECT_FLAG_INSERT_SHIFT;
 
 // Volume control
-#define EFFECT_FLAG_VOLUME_SHIFT (EFFECT_FLAG_INSERT_SHIFT + EFFECT_FLAG_INSERT_SIZE)
-#define EFFECT_FLAG_VOLUME_SIZE 3
-#define EFFECT_FLAG_VOLUME_MASK                                                          \
-    (((1 << EFFECT_FLAG_VOLUME_SIZE) - 1) << EFFECT_FLAG_VOLUME_SHIFT)
-#define EFFECT_FLAG_VOLUME_CTRL (1 << EFFECT_FLAG_VOLUME_SHIFT)
-#define EFFECT_FLAG_VOLUME_IND (2 << EFFECT_FLAG_VOLUME_SHIFT)
-#define EFFECT_FLAG_VOLUME_NONE (0 << EFFECT_FLAG_VOLUME_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_VOLUME_SHIFT = EFFECT_FLAG_INSERT_SHIFT + EFFECT_FLAG_INSERT_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_VOLUME_SIZE = 3;
+inline constexpr uint32_t EFFECT_FLAG_VOLUME_MASK =
+    ((1U << EFFECT_FLAG_VOLUME_SIZE) - 1U) << EFFECT_FLAG_VOLUME_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_VOLUME_CTRL = 1U << EFFECT_FLAG_VOLUME_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_VOLUME_IND = 2U << EFFECT_FLAG_VOLUME_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_VOLUME_NONE = 0U << EFFECT_FLAG_VOLUME_SHIFT;
 
 // Device indication
-#define EFFECT_FLAG_DEVICE_SHIFT (EFFECT_FLAG_VOLUME_SHIFT + EFFECT_FLAG_VOLUME_SIZE)
-#define EFFECT_FLAG_DEVICE_SIZE 3
-#define EFFECT_FLAG_DEVICE_MASK                                                          \
-    (((1 << EFFECT_FLAG_DEVICE_SIZE) - 1) << EFFECT_FLAG_DEVICE_SHIFT)
-#define EFFECT_FLAG_DEVICE_IND (1 << EFFECT_FLAG_DEVICE_SHIFT)
-#define EFFECT_FLAG_DEVICE_NONE (0 << EFFECT_FLAG_DEVICE_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_DEVICE_SHIFT = EFFECT_FLAG_VOLUME_SHIFT + EFFECT_FLAG_VOLUME_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_DEVICE_SIZE = 3;
+inline constexpr uint32_t EFFECT_FLAG_DEVICE_MASK =
+    ((1U << EFFECT_FLAG_DEVICE_SIZE) - 1U) << EFFECT_FLAG_DEVICE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_DEVICE_IND = 1U << EFFECT_FLAG_DEVICE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_DEVICE_NONE = 0U << EFFECT_FLAG_DEVICE_SHIFT;
 
 // Sample input modes
-#define EFFECT_FLAG_INPUT_SHIFT (EFFECT_FLAG_DEVICE_SHIFT + EFFECT_FLAG_DEVICE_SIZE)
-#define EFFECT_FLAG_INPUT_SIZE 2
-#define EFFECT_FLAG_INPUT_MASK                                                           \
-    (((1 << EFFECT_FLAG_INPUT_SIZE) - 1) << EFFECT_FLAG_INPUT_SHIFT)
-#define EFFECT_FLAG_INPUT_DIRECT (1 << EFFECT_FLAG_INPUT_SHIFT)
-#define EFFECT_FLAG_INPUT_PROVIDER (2 << EFFECT_FLAG_INPUT_SHIFT)
-#define EFFECT_FLAG_INPUT_BOTH (3 << EFFECT_FLAG_INPUT_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_INPUT_SHIFT = EFFECT_FLAG_DEVICE_SHIFT + EFFECT_FLAG_DEVICE_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_INPUT_SIZE = 2;
+inline constexpr uint32_t EFFECT_FLAG_INPUT_MASK =
+    ((1U << EFFECT_FLAG_INPUT_SIZE) - 1U) << EFFECT_FLAG_INPUT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INPUT_DIRECT = 1U << EFFECT_FLAG_INPUT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INPUT_PROVIDER = 2U << EFFECT_FLAG_INPUT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_INPUT_BOTH = 3U << EFFECT_FLAG_INPUT_SHIFT;
 
 // Sample output modes
-#define EFFECT_FLAG_OUTPUT_SHIFT (EFFECT_FLAG_INPUT_SHIFT + EFFECT_FLAG_INPUT_SIZE)
-#define EFFECT_FLAG_OUTPUT_SIZE 2
-#define EFFECT_FLAG_OUTPUT_MASK                                                          \
-    (((1 << EFFECT_FLAG_OUTPUT_SIZE) - 1) << EFFECT_FLAG_OUTPUT_SHIFT)
-#define EFFECT_FLAG_OUTPUT_DIRECT (1 << EFFECT_FLAG_OUTPUT_SHIFT)
-#define EFFECT_FLAG_OUTPUT_PROVIDER (2 << EFFECT_FLAG_OUTPUT_SHIFT)
-#define EFFECT_FLAG_OUTPUT_BOTH (3 << EFFECT_FLAG_OUTPUT_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_OUTPUT_SHIFT = EFFECT_FLAG_INPUT_SHIFT + EFFECT_FLAG_INPUT_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_OUTPUT_SIZE = 2;
+inline constexpr uint32_t EFFECT_FLAG_OUTPUT_MASK =
+    ((1U << EFFECT_FLAG_OUTPUT_SIZE) - 1U) << EFFECT_FLAG_OUTPUT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_OUTPUT_DIRECT = 1U << EFFECT_FLAG_OUTPUT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_OUTPUT_PROVIDER = 2U << EFFECT_FLAG_OUTPUT_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_OUTPUT_BOTH = 3U << EFFECT_FLAG_OUTPUT_SHIFT;
 
 // Hardware acceleration mode
-#define EFFECT_FLAG_HW_ACC_SHIFT (EFFECT_FLAG_OUTPUT_SHIFT + EFFECT_FLAG_OUTPUT_SIZE)
-#define EFFECT_FLAG_HW_ACC_SIZE 2
-#define EFFECT_FLAG_HW_ACC_MASK                                                          \
-    (((1 << EFFECT_FLAG_HW_ACC_SIZE) - 1) << EFFECT_FLAG_HW_ACC_SHIFT)
-#define EFFECT_FLAG_HW_ACC_SIMPLE (1 << EFFECT_FLAG_HW_ACC_SHIFT)
-#define EFFECT_FLAG_HW_ACC_TUNNEL (2 << EFFECT_FLAG_HW_ACC_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_HW_ACC_SHIFT = EFFECT_FLAG_OUTPUT_SHIFT + EFFECT_FLAG_OUTPUT_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_HW_ACC_SIZE = 2;
+inline constexpr uint32_t EFFECT_FLAG_HW_ACC_MASK =
+    ((1U << EFFECT_FLAG_HW_ACC_SIZE) - 1U) << EFFECT_FLAG_HW_ACC_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_HW_ACC_SIMPLE = 1U << EFFECT_FLAG_HW_ACC_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_HW_ACC_TUNNEL = 2U << EFFECT_FLAG_HW_ACC_SHIFT;
 
 // Audio mode indication
-#define EFFECT_FLAG_AUDIO_MODE_SHIFT (EFFECT_FLAG_HW_ACC_SHIFT + EFFECT_FLAG_HW_ACC_SIZE)
-#define EFFECT_FLAG_AUDIO_MODE_SIZE 2
-#define EFFECT_FLAG_AUDIO_MODE_MASK                                                      \
-    (((1 << EFFECT_FLAG_AUDIO_MODE_SIZE) - 1) << EFFECT_FLAG_AUDIO_MODE_SHIFT)
-#define EFFECT_FLAG_AUDIO_MODE_IND (1 << EFFECT_FLAG_AUDIO_MODE_SHIFT)
-#define EFFECT_FLAG_AUDIO_MODE_NONE (0 << EFFECT_FLAG_AUDIO_MODE_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_MODE_SHIFT = EFFECT_FLAG_HW_ACC_SHIFT + EFFECT_FLAG_HW_ACC_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_MODE_SIZE = 2;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_MODE_MASK =
+    ((1U << EFFECT_FLAG_AUDIO_MODE_SIZE) - 1U) << EFFECT_FLAG_AUDIO_MODE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_MODE_IND = 1U << EFFECT_FLAG_AUDIO_MODE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_MODE_NONE = 0U << EFFECT_FLAG_AUDIO_MODE_SHIFT;
 
 // Audio source indication
-#define EFFECT_FLAG_AUDIO_SOURCE_SHIFT                                                   \
-    (EFFECT_FLAG_AUDIO_MODE_SHIFT + EFFECT_FLAG_AUDIO_MODE_SIZE)
-#define EFFECT_FLAG_AUDIO_SOURCE_SIZE 2
-#define EFFECT_FLAG_AUDIO_SOURCE_MASK                                                    \
-    (((1 << EFFECT_FLAG_AUDIO_SOURCE_SIZE) - 1) << EFFECT_FLAG_AUDIO_SOURCE_SHIFT)
-#define EFFECT_FLAG_AUDIO_SOURCE_IND (1 << EFFECT_FLAG_AUDIO_SOURCE_SHIFT)
-#define EFFECT_FLAG_AUDIO_SOURCE_NONE (0 << EFFECT_FLAG_AUDIO_SOURCE_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_SOURCE_SHIFT =
+    EFFECT_FLAG_AUDIO_MODE_SHIFT + EFFECT_FLAG_AUDIO_MODE_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_SOURCE_SIZE = 2;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_SOURCE_MASK =
+    ((1U << EFFECT_FLAG_AUDIO_SOURCE_SIZE) - 1U) << EFFECT_FLAG_AUDIO_SOURCE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_SOURCE_IND = 1U << EFFECT_FLAG_AUDIO_SOURCE_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_AUDIO_SOURCE_NONE = 0U << EFFECT_FLAG_AUDIO_SOURCE_SHIFT;
 
 // Effect offload indication
-#define EFFECT_FLAG_OFFLOAD_SHIFT                                                        \
-    (EFFECT_FLAG_AUDIO_SOURCE_SHIFT + EFFECT_FLAG_AUDIO_SOURCE_SIZE)
-#define EFFECT_FLAG_OFFLOAD_SIZE 1
-#define EFFECT_FLAG_OFFLOAD_MASK                                                         \
-    (((1 << EFFECT_FLAG_OFFLOAD_SIZE) - 1) << EFFECT_FLAG_OFFLOAD_SHIFT)
-#define EFFECT_FLAG_OFFLOAD_SUPPORTED (1 << EFFECT_FLAG_OFFLOAD_SHIFT)
+inline constexpr uint32_t EFFECT_FLAG_OFFLOAD_SHIFT =
+    EFFECT_FLAG_AUDIO_SOURCE_SHIFT + EFFECT_FLAG_AUDIO_SOURCE_SIZE;
+inline constexpr uint32_t EFFECT_FLAG_OFFLOAD_SIZE = 1;
+inline constexpr uint32_t EFFECT_FLAG_OFFLOAD_MASK =
+    ((1U << EFFECT_FLAG_OFFLOAD_SIZE) - 1U) << EFFECT_FLAG_OFFLOAD_SHIFT;
+inline constexpr uint32_t EFFECT_FLAG_OFFLOAD_SUPPORTED = 1U << EFFECT_FLAG_OFFLOAD_SHIFT;
 
-#define EFFECT_MAKE_API_VERSION(M, m) (((M) << 16) | ((m) & 0xFFFF))
-#define EFFECT_API_VERSION_MAJOR(v) ((v) >> 16)
-#define EFFECT_API_VERSION_MINOR(v) ((m) & 0xFFFF)
+constexpr uint32_t EFFECT_MAKE_API_VERSION(uint32_t M, uint32_t m) noexcept {
+    return (M << 16) | (m & 0xFFFF);
+}
+constexpr uint32_t EFFECT_API_VERSION_MAJOR(uint32_t v) noexcept { return v >> 16; }
+constexpr uint32_t EFFECT_API_VERSION_MINOR(uint32_t v) noexcept { return v & 0xFFFF; }
 
 /////////////////////////////////////////////////
 //      Effect control interface
 /////////////////////////////////////////////////
 
 // Effect control interface version 2.0
-#define EFFECT_CONTROL_API_VERSION EFFECT_MAKE_API_VERSION(2, 0)
+inline constexpr uint32_t EFFECT_CONTROL_API_VERSION = EFFECT_MAKE_API_VERSION(2, 0);
 
 // Effect control interface structure: effect_interface_s
 // The effect control interface is exposed by each effect engine implementation. It consists of
@@ -306,7 +316,7 @@ struct effect_interface_s {
         effect_handle_t self,
         uint32_t cmd_code,
         uint32_t cmd_size,
-        void *cmd_data,
+        const void *cmd_data,
         uint32_t *reply_size,
         void *reply_data
     );
@@ -366,6 +376,9 @@ struct effect_interface_s {
 //
 //--- Standardized command codes for command() function
 //
+// Kept as a plain (unscoped) enum, not `enum class`, because downstream code
+// (ViperContext.cpp) relies on bare names (e.g. EFFECT_CMD_INIT) in switch
+// statements, and this enum crosses the Android effect HAL ABI boundary.
 enum effect_command_e {
     EFFECT_CMD_INIT,               // initialize effect engine
     EFFECT_CMD_SET_CONFIG,         // configure effect engine (see effect_config_t)
@@ -807,9 +820,10 @@ typedef struct effect_param_s {
 // Effect library interface version 3.0
 // Note that EffectsFactory.c only checks the major version component, so changes to the minor
 // number can only be used for fully backwards compatible changes
-#define EFFECT_LIBRARY_API_VERSION EFFECT_MAKE_API_VERSION(3, 0)
+inline constexpr uint32_t EFFECT_LIBRARY_API_VERSION = EFFECT_MAKE_API_VERSION(3, 0);
 
-#define AUDIO_EFFECT_LIBRARY_TAG ((('A') << 24) | (('E') << 16) | (('L') << 8) | ('T'))
+inline constexpr uint32_t AUDIO_EFFECT_LIBRARY_TAG =
+    ((('A') << 24) | (('E') << 16) | (('L') << 8) | ('T'));
 
 // Every effect library must have a data structure named AUDIO_EFFECT_LIBRARY_INFO_SYM
 // and the fields of this data structure must begin with audio_effect_library_t

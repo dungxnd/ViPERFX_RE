@@ -28,6 +28,7 @@
 #include <memory>
 #include <vector>
 #include <optional>
+#include <string_view>
 
 // NDK binder
 #include <android/binder_status.h>
@@ -67,20 +68,23 @@ using DataMQ = ::android::AidlMessageQueue<
 //   type : 7261726f-6d75-7369-6364-28e2fd3ac39e  (vendor/extension)
 //   impl : 90380da3-8536-4744-a6a3-5731970e640f  (ViPER4Android)
 // ---------------------------------------------------------------------------
-static const AudioUuid kTypeUuid = {
+inline constexpr AudioUuid kTypeUuid = {
     static_cast<int32_t>(0x7261726f),
     static_cast<int16_t>(0x6d75),
     static_cast<int16_t>(0x7369),
     static_cast<int16_t>(0x6364),
     {0x28, 0xe2, 0xfd, 0x3a, 0xc3, 0x9e}
 };
-static const AudioUuid kImplUuid = {
+inline constexpr AudioUuid kImplUuid = {
     static_cast<int32_t>(0x90380da3),
     static_cast<int16_t>(0x8536),
     static_cast<int16_t>(0x4744),
     static_cast<int16_t>(0xa6a3),
     {0x57, 0x31, 0x97, 0x0e, 0x64, 0x0f}
 };
+
+inline constexpr std::string_view kEffectName       = "ViPER4Android";
+inline constexpr std::string_view kImplementorName  = VIPER_AUTHORS;
 
 // ---------------------------------------------------------------------------
 // ViPEREffect — direct BnEffect implementation (no EffectImpl base class)
@@ -295,12 +299,12 @@ private:
     // --- worker thread ---
 
     void startWorkerLocked() {
-        mWorkerExit = false;
+        mWorkerExit.store(false, std::memory_order_relaxed);
         mWorkerThread = std::thread([this] { workerLoop(); });
     }
 
     void stopWorkerLocked() {
-        mWorkerExit = true;
+        mWorkerExit.store(true, std::memory_order_relaxed);
         if (mInputMQ) {
             // Wake the worker if it is blocked on the event flag
             auto* ef = mInputMQ->getEventFlagWord();
@@ -316,11 +320,11 @@ private:
 
     void workerLoop() {
         ALOGD("worker: started");
-        const size_t kChannels  = 2;
-        const size_t kFrameSize = kChannels * sizeof(float);
+        constexpr size_t kChannels  = 2;
+        constexpr size_t kFrameSize = kChannels * sizeof(float);
         std::vector<float> buf;
 
-        while (!mWorkerExit) {
+        while (!mWorkerExit.load(std::memory_order_relaxed)) {
             // Wait for data (timeout 100 ms)
             auto* ef = mInputMQ->getEventFlagWord();
             if (ef) {
@@ -332,7 +336,7 @@ private:
                     android::hardware::EventFlag::deleteEventFlag(&flag);
                 }
             }
-            if (mWorkerExit) break;
+            if (mWorkerExit.load(std::memory_order_relaxed)) break;
 
             const size_t avail = mInputMQ->availableToRead();
             if (avail == 0) continue;
@@ -401,8 +405,8 @@ const Descriptor ViPEREffect::kDescriptor = {
             .audioModeIndication = false,
             .audioSourceIndication = false,
         },
-        .name        = "ViPER4Android",
-        .implementor = VIPER_AUTHORS,
+        .name        = std::string(kEffectName),
+        .implementor = std::string(kImplementorName),
     }
 };
 

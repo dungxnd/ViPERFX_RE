@@ -2,14 +2,17 @@
 #include "essential.h"
 #include "log.h"
 #include "viper/constants.h"
+#include <memory>
+#include <new>
 
-extern "C" {
+namespace {
+
 struct ViperHandle {
-    const effect_interface_s *interface; // Always keep as first member
-    ViperContext *context;
+    const effect_interface_s *interface{}; // Always keep as first member
+    std::unique_ptr<ViperContext> context;
 };
 
-static const effect_descriptor_t kViperDescriptor = {
+constexpr effect_descriptor_t kViperDescriptor = {
     .type = *EFFECT_UUID_NULL,
     .uuid = {0x90380da3, 0x8536, 0x4744, 0xa6a3, {0x57, 0x31, 0x97, 0x0e, 0x64, 0x0f}},
     .api_version = EFFECT_CONTROL_API_VERSION,
@@ -21,7 +24,11 @@ static const effect_descriptor_t kViperDescriptor = {
     .implementor = VIPER_AUTHORS
 };
 
-static int32_t ViperInterfaceProcess(
+[[nodiscard]] bool IsMatchingUuid(const effect_uuid_t *uuid) {
+    return uuid != nullptr && *uuid == kViperDescriptor.uuid;
+}
+
+int32_t ViperInterfaceProcess(
     effect_handle_t self, audio_buffer_t *in_buffer, audio_buffer_t *out_buffer
 ) {
     const auto viper_handle = reinterpret_cast<ViperHandle *>(self);
@@ -30,11 +37,11 @@ static int32_t ViperInterfaceProcess(
     return viper_handle->context->Process(in_buffer, out_buffer);
 }
 
-static int32_t ViperInterfaceCommand(
+int32_t ViperInterfaceCommand(
     effect_handle_t self,
     const uint32_t cmd_code,
     const uint32_t cmd_size,
-    void *cmd_data,
+    const void *cmd_data,
     uint32_t *reply_size,
     void *reply_data
 ) {
@@ -46,66 +53,68 @@ static int32_t ViperInterfaceCommand(
     );
 }
 
-static int32_t ViperInterfaceGetDescriptor(
-    effect_handle_t self, effect_descriptor_t *descriptor
-) {
+int32_t ViperInterfaceGetDescriptor(effect_handle_t self, effect_descriptor_t *descriptor) {
     if (descriptor == nullptr) return -EINVAL;
     *descriptor = kViperDescriptor;
     return 0;
 }
 
-static constexpr effect_interface_s kViperInterface = {
+constexpr effect_interface_s kViperInterface = {
     .process = ViperInterfaceProcess,
     .command = ViperInterfaceCommand,
     .get_descriptor = ViperInterfaceGetDescriptor
 };
 
-static int32_t ViperLibraryCreate(
+int32_t ViperLibraryCreate(
     const effect_uuid_t *uuid, int32_t session_id, int32_t io_id, effect_handle_t *handle
 ) {
     if (uuid == nullptr || handle == nullptr) return -EINVAL;
-    if (memcmp(uuid, &kViperDescriptor.uuid, sizeof(effect_uuid_t)) != 0) return -ENOENT;
+    if (!IsMatchingUuid(uuid)) return -ENOENT;
 
-    auto *viper_handle = new ViperHandle();
+    // v4a_re builds with -fno-exceptions: use nothrow allocation instead of try/catch.
+    std::unique_ptr<ViperHandle> viper_handle{new (std::nothrow) ViperHandle()};
+    if (viper_handle == nullptr) return -ENOMEM;
+
     viper_handle->interface = &kViperInterface;
-    viper_handle->context = new ViperContext();
-    *handle = reinterpret_cast<effect_handle_t>(viper_handle);
+    viper_handle->context.reset(new (std::nothrow) ViperContext());
+    if (viper_handle->context == nullptr) return -ENOMEM;
+
     VIPER_LOGI(
         "ViperLibraryCreate: session_id=%d, io_id=%d, context=%p",
         session_id,
         io_id,
-        viper_handle->context
+        viper_handle->context.get()
     );
+    *handle = reinterpret_cast<effect_handle_t>(viper_handle.release());
     return 0;
 }
 
-static int32_t ViperLibraryRelease(effect_handle_t handle) {
-    const auto viper_handle = reinterpret_cast<ViperHandle *>(handle);
-    if (viper_handle == nullptr) return -EINVAL;
+int32_t ViperLibraryRelease(effect_handle_t handle) {
+    const std::unique_ptr<ViperHandle> owned{reinterpret_cast<ViperHandle *>(handle)};
+    if (owned == nullptr) return -EINVAL;
 
-    VIPER_LOGI("ViperLibraryRelease: context=%p", viper_handle->context);
-    delete viper_handle->context;
+    VIPER_LOGI("ViperLibraryRelease: context=%p", owned->context.get());
     return 0;
 }
 
-static int32_t ViperLibraryGetDescriptor(
-    const effect_uuid_t *uuid, effect_descriptor_t *descriptor
-) {
+int32_t ViperLibraryGetDescriptor(const effect_uuid_t *uuid, effect_descriptor_t *descriptor) {
     if (uuid == nullptr || descriptor == nullptr) return -EINVAL;
-    if (memcmp(uuid, &kViperDescriptor.uuid, sizeof(effect_uuid_t)) != 0) return -ENOENT;
+    if (!IsMatchingUuid(uuid)) return -ENOENT;
 
     *descriptor = kViperDescriptor;
     return 0;
 }
 
-__attribute__((visibility("default"))) audio_effect_library_t
-    AUDIO_EFFECT_LIBRARY_INFO_SYM = {
-        .tag = AUDIO_EFFECT_LIBRARY_TAG,
-        .version = EFFECT_LIBRARY_API_VERSION,
-        .name = VIPER_NAME,
-        .implementor = VIPER_AUTHORS,
-        .create_effect = ViperLibraryCreate,
-        .release_effect = ViperLibraryRelease,
-        .get_descriptor = ViperLibraryGetDescriptor,
+} // namespace
+
+extern "C" {
+[[gnu::visibility("default")]] audio_effect_library_t AUDIO_EFFECT_LIBRARY_INFO_SYM = {
+    .tag = AUDIO_EFFECT_LIBRARY_TAG,
+    .version = EFFECT_LIBRARY_API_VERSION,
+    .name = VIPER_NAME,
+    .implementor = VIPER_AUTHORS,
+    .create_effect = ViperLibraryCreate,
+    .release_effect = ViperLibraryRelease,
+    .get_descriptor = ViperLibraryGetDescriptor,
 };
 } // extern "C"
