@@ -6,6 +6,10 @@
 #      strong OEM signal the device shipped with a legacy audio stack regardless
 #      of API level. OEMs like OnePlus ship Android 15 with legacy HAL.
 #
+#   1b. VINTF override: if Signal 1 fired but the VINTF manifest explicitly
+#       lists the AIDL audio effect interface, the device runs a true AIDL
+#       stack (legacy XML kept only for 32-bit compat). Override the guess.
+#
 #   2. Static FS — AIDL-positive: actual AIDL HAL binaries or config present.
 #      Works in recovery/offline mode. Most reliable cross-OEM positive signal.
 #        a. AIDL HAL executable in /vendor/bin/hw/ or /apex/
@@ -20,10 +24,15 @@
 #   4. ps -A scan: catches OEM daemons whose binary name contains both
 #      "audio" and "aidl" in either order.
 #
-#   5. API >= 35 last-resort tiebreaker ONLY when no FS evidence was found.
-#      AOSP removed legacy HAL in Android 15, but many OEMs (OnePlus, Xiaomi,
-#      Samsung) still ship legacy stacks on API 35 devices. Do NOT use this
-#      as a primary signal.
+#   5. Binder service check: `service check android.hardware.audio.effect.IFactory`
+#      — the same source-of-truth the audio framework uses.  Exit 0 = AIDL HAL
+#      is running.  This replaces the old "API >= 35" tiebreaker which was wrong:
+#      many Android 15 OEMs still ship the legacy HAL.
+#
+#   6. Safe default → legacy.  Wrongly installing legacy on an AIDL-only device
+#      means ViPER silently doesn't load; wrongly installing AIDL on a
+#      legacy-only device causes AudioEffect exceptions (versionCode=-1,
+#      samplingRate=unknown).  Legacy failure is safer.
 ui_print "- Detecting audio HAL type..."
 USE_AIDL=false
 LEGACY_CONFIRMED=false
@@ -94,13 +103,32 @@ if ! $USE_AIDL && ! $LEGACY_CONFIRMED && [ "$API" -ge 33 ]; then
   fi
 fi
 
-# ── Signal 5: API >= 35 last-resort tiebreaker ───────────────────────────────
-# Only fires when ALL static and runtime evidence was absent (e.g. flashing on
-# a freshly wiped device where /vendor is not yet populated with final OEM
-# blobs). Skip entirely if legacy stack was confirmed above.
-if ! $USE_AIDL && ! $LEGACY_CONFIRMED && [ "$API" -ge 35 ]; then
-  ui_print "    ! No FS evidence found; defaulting to AIDL on API >= 35 (tiebreaker)"
-  USE_AIDL=true
+# ── Signal 5: Binder service check — IFactory AIDL HAL ───────────────────────
+# `service check` exits 0 only when the named Binder service is registered in
+# ServiceManager.  android.hardware.audio.effect.IFactory is the canonical AOSP
+# service name for the AIDL audio-effect HAL (aosp/platform/hardware/interfaces
+# audio/aidl/…/IFactory.aidl).  Unlike every FS signal above, this is the same
+# source-of-truth the audio framework itself uses to locate the HAL, so a 0
+# exit code is a hard guarantee that the AIDL stack is running.
+#
+# API >= 35 ALONE is deliberately NOT used as a fallback: many Android 15 OEMs
+# (e.g. MediaTek A15 devices, some Xiaomi/Samsung branches) still ship the
+# legacy audio effect HAL and would break silently if forced into AIDL mode.
+if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
+  if service check android.hardware.audio.effect.IFactory 1>/dev/null 2>&1; then
+    ui_print "    ! IFactory Binder service confirmed — enabling AIDL (Signal 5)"
+    USE_AIDL=true
+  fi
+fi
+
+# ── Signal 6: Final safe default ─────────────────────────────────────────────
+# If no signal above resolved USE_AIDL, default to legacy.  This is the safe
+# choice: a wrongly-installed legacy driver fails gracefully (effect not found
+# → disabled), whereas a wrongly-installed AIDL driver on a legacy-only device
+# causes AudioEffect creation exceptions and a permanently broken audio stack.
+# No API-level guess here — see above.
+if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
+  ui_print "    ! No HAL evidence found; defaulting to Legacy (safe fallback)"
 fi
 
 # ── Helper: place_file SRC ORIG_DEVICE_PATH ───────────────────────────────────
