@@ -1,154 +1,161 @@
-# ── AIDL detection ────────────────────────────────────────────────────────────
-# Detection priority (highest confidence first):
+# ── HAL type detection — symmetric AIDL + HIDL probing ───────────────────────
 #
-#   1. Negative guard: if legacy effect .so already exists on the device
-#      (e.g. libeffectproxy.so or the legacy audio_effects.conf), this is a
-#      strong OEM signal the device shipped with a legacy audio stack regardless
-#      of API level. OEMs like OnePlus ship Android 15 with legacy HAL.
+# Design: run BOTH AIDL and HIDL detectors independently, then resolve.
 #
-#   1b. VINTF override: if Signal 1 fired but the VENDOR VINTF manifest
-#       explicitly lists the AIDL audio effect interface, the device runs a
-#       true AIDL stack (legacy XML kept only for 32-bit compat).
+# AIDL signals (highest confidence first):
+#   A1. Binder IFactory service registered — hard runtime proof.
+#   A2. AIDL HAL binary in /vendor/bin/hw/ or com.android.hardware.audio APEX.
+#   A3. Vendor VINTF manifest has <hal format="aidl"> for audio.effect.
+#   A4. audio_effects_config.xml present without legacy audio_effects.conf/xml.
+#   A5. Running AIDL HAL service name (getprop / ps scan).
 #
-#       CRITICAL: Only /vendor/etc/vintf/, /vendor/manifest.xml, and
-#       /odm/etc/vintf/ are searched — these are the *device* manifests
-#       (what the vendor HAL *provides*).
+# HIDL signals (highest confidence first):
+#   H1. Binder IEffectsFactory HIDL service registered — hard runtime proof.
+#   H2. libeffectproxy.so present — the HIDL effects proxy, absent on AIDL stacks.
+#   H3. audio_effects.conf or audio_effects.xml present in /vendor/etc/.
+#   H4. Vendor VINTF manifest has <hal format="hidl"> for audio.effect.
+#   H5. HIDL IEffectsFactory service in hwservicemanager (service list).
 #
-#       /system/etc/vintf/ is intentionally EXCLUDED. It contains the
-#       framework *compatibility matrix* (compatibility_matrix.*.xml) which
-#       lists android.hardware.audio.effect as an *optional* AIDL HAL the
-#       framework *accepts* — present on every Android 13+ device regardless
-#       of whether the vendor implements it.  Grepping it causes a 100%
-#       false-positive on legacy A13–A15 OEM devices.
+# Resolution:
+#   - If BOTH are detected: AIDL wins (a device mid-migration keeps HIDL shims).
+#   - If only AIDL:  USE_AIDL=true.
+#   - If only HIDL:  USE_AIDL=false (legacy).
+#   - If neither:    safe default → legacy.
 #
-#   2. Static FS — AIDL-positive: actual AIDL HAL binaries or config present.
-#      Works in recovery/offline mode. Most reliable cross-OEM positive signal.
-#        a. AIDL HAL executable in /vendor/bin/hw/ or /apex/
-#        b. VENDOR VINTF manifest declares android.hardware.audio.effect
-#           (same exclusion rule: /system/etc/vintf/ not searched)
-#        c. audio_effects_config.xml (AOSP AIDL-era filename, distinct from
-#           legacy audio_effects.conf / audio_effects.xml)
-#
-#   3. Runtime property: init.svc.vendor.audio-hal-aidl = "running".
-#      Most reliable when booted, but only canonical AOSP service names —
-#      misses OEM-renamed daemons.
-#
-#   4. ps -A scan: catches OEM daemons whose binary name contains both
-#      "audio" and "aidl" in either order.
-#
-#   5. Binder service check: `service check android.hardware.audio.effect.IFactory`
-#      — the same source-of-truth the audio framework uses.  Exit 0 = AIDL HAL
-#      is running.  This replaces the old "API >= 35" tiebreaker which was wrong:
-#      many Android 15 OEMs still ship the legacy HAL.
-#
-#   6. Safe default → legacy.  Wrongly installing legacy on an AIDL-only device
-#      means ViPER silently doesn't load; wrongly installing AIDL on a
-#      legacy-only device causes AudioEffect exceptions (versionCode=-1,
-#      samplingRate=unknown).  Legacy failure is safer.
+# /system/etc/vintf/ is NEVER searched for either detector: it holds the
+# framework *compatibility matrix* — what Android *accepts*, not what the
+# vendor *provides*.  It matches both AIDL and HIDL names on every A13+ device
+# and is useless for HAL presence detection.
 ui_print "- Detecting audio HAL type..."
-USE_AIDL=false
-LEGACY_CONFIRMED=false
 
-# ── Signal 1: Negative guard — legacy stack evidence ─────────────────────────
-# Presence of legacy effects config / libeffectproxy.so is a soft legacy signal.
-# It is NOT a hard block: Android 14/15/16 AIDL-only devices (Pixel 8+, Snapdragon
-# 8 Gen 3 OEMs) keep audio_effects.xml for 32-bit vendor blob backward compat while
-# running a pure AIDL audio HAL. VINTF manifest (Signal 2b) can override this guess.
-if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
-   ls /vendor/etc/audio_effects.xml 1>/dev/null 2>&1 || \
-   ls /vendor/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1 || \
-   ls /system/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1; then
-  LEGACY_CONFIRMED=true
-fi
-
-# ── Signal 1b: VINTF override ─────────────────────────────────────────────────
-# If Signal 1 fired but the VENDOR VINTF manifest explicitly lists the AIDL
-# audio effect interface, the legacy XML files are kept only for 32-bit compat
-# and the device runs a true AIDL stack. Override the guess.
-#
-# Search ONLY vendor/ODM device manifests — NOT /system/etc/vintf/:
-#   /vendor/etc/vintf/   — standard Treble vendor manifest directory
-#   /vendor/manifest.xml — legacy flat manifest (pre-Treble OEMs, older devices)
-#   /odm/etc/vintf/      — ODM overlay manifests
-#
-# /system/etc/vintf/ is EXCLUDED: it holds the *framework compatibility matrix*
-# (compatibility_matrix.*.xml) which declares "android.hardware.audio.effect"
-# as an optional HAL the framework *can use* — true on every Android 13+ device
-# regardless of whether the vendor actually provides the AIDL HAL.  Including it
-# produces a guaranteed false-positive on legacy OEM A13–A15 devices.
-if $LEGACY_CONFIRMED && grep -rq "android.hardware.audio.effect" \
-     /vendor/etc/vintf/ /vendor/manifest.xml \
-     /odm/etc/vintf/ 2>/dev/null; then
-  ui_print "    ! Vendor VINTF declares AIDL effect iface — overriding legacy XML signal"
-  LEGACY_CONFIRMED=false
-  USE_AIDL=true
-fi
-
-# ── Signal 2: Static FS — AIDL-positive ──────────────────────────────────────
-if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
-  # 2a. AIDL HAL binaries in vendor or APEX
-  if ls /vendor/bin/hw/*audio*aidl* 1>/dev/null 2>&1 || \
-     ls /apex/com.android.hardware.audio/bin/hw/*audio* 1>/dev/null 2>&1; then
-    USE_AIDL=true
-  fi
-  # 2b. Vendor VINTF manifest declares AIDL audio effect interface.
-  # Same exclusion rule as Signal 1b: /system/etc/vintf/ NOT searched because
-  # it contains the framework compatibility matrix, not the device manifest.
-  if ! $USE_AIDL && grep -rq "android.hardware.audio.effect" \
+# ── Shared helper: awk-based <hal> block scanner ─────────────────────────────
+# vintf_hal_format HAL_NAME FORMAT  →  returns 0 if vendor VINTF has a <hal>
+# block with <name>HAL_NAME</name> and format="FORMAT" attribute.
+# Searches /vendor/etc/vintf/, /vendor/manifest.xml, /odm/etc/vintf/ only.
+vintf_hal_format() {
+  local name="$1" fmt="$2"
+  grep -rl "$name" \
        /vendor/etc/vintf/ /vendor/manifest.xml \
-       /odm/etc/vintf/ 2>/dev/null; then
-    USE_AIDL=true
-  fi
-  # 2c. audio_effects_config.xml — AOSP AIDL-era filename (distinct from
-  #     legacy audio_effects.conf and audio_effects.xml)
-  if ! $USE_AIDL && [ -f "/vendor/etc/audio_effects_config.xml" ] && \
-     ! [ -f "/vendor/etc/audio_effects.conf" ] && \
-     ! [ -f "/vendor/etc/audio_effects.xml" ]; then
-    USE_AIDL=true
-  fi
+       /odm/etc/vintf/ 2>/dev/null | \
+  while read -r f; do
+    awk -v name="$name" -v fmt="$fmt" '
+      /<hal/{in_hal=1; has_fmt=0; has_name=0}
+      in_hal && $0 ~ ("format=\"" fmt "\""){has_fmt=1}
+      in_hal && $0 ~ name {has_name=1}
+      in_hal && /<\/hal>/{
+        if(has_fmt && has_name){found=1; exit}
+        in_hal=0
+      }
+      END{exit !found}
+    ' "$f" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+AIDL_SCORE=0
+HIDL_SCORE=0
+
+# ════════════════════════════════════════════════════════════════════════════
+# AIDL probes
+# ════════════════════════════════════════════════════════════════════════════
+
+# A1 — Binder IFactory registered (strongest possible signal)
+if service check android.hardware.audio.effect.IFactory 1>/dev/null 2>&1; then
+  ui_print "    [AIDL A1] IFactory Binder service confirmed"
+  AIDL_SCORE=$((AIDL_SCORE + 10))
 fi
 
-# ── Signal 3: Runtime property (booted mode only) ────────────────────────────
-if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
-  if [ "$(getprop init.svc.vendor.audio-hal-aidl 2>/dev/null)" = "running" ] || \
-     [ "$(getprop init.svc.vendor.audio-effect-hal-aidl 2>/dev/null)" = "running" ]; then
-    USE_AIDL=true
-  fi
+# A2 — AIDL HAL binary in vendor or APEX
+if ls /vendor/bin/hw/*audio*aidl* 1>/dev/null 2>&1 || \
+   ls /apex/com.android.hardware.audio/bin/hw/*audio* 1>/dev/null 2>&1; then
+  ui_print "    [AIDL A2] AIDL HAL binary found"
+  AIDL_SCORE=$((AIDL_SCORE + 4))
 fi
 
-# ── Signal 4: ps scan fallback ────────────────────────────────────────────────
-if ! $USE_AIDL && ! $LEGACY_CONFIRMED && [ "$API" -ge 33 ]; then
-  if ps -A 2>/dev/null | grep -qE '([Aa]udio[^[:space:]]*[Aa]idl|[Aa]idl[^[:space:]]*[Aa]udio)'; then
-    USE_AIDL=true
-  fi
+# A3 — Vendor VINTF declares <hal format="aidl"> for android.hardware.audio.effect
+if vintf_hal_format "android.hardware.audio.effect" "aidl"; then
+  ui_print "    [AIDL A3] Vendor VINTF declares AIDL audio effect HAL"
+  AIDL_SCORE=$((AIDL_SCORE + 4))
 fi
 
-# ── Signal 5: Binder service check — IFactory AIDL HAL ───────────────────────
-# `service check` exits 0 only when the named Binder service is registered in
-# ServiceManager.  android.hardware.audio.effect.IFactory is the canonical AOSP
-# service name for the AIDL audio-effect HAL (aosp/platform/hardware/interfaces
-# audio/aidl/…/IFactory.aidl).  Unlike every FS signal above, this is the same
-# source-of-truth the audio framework itself uses to locate the HAL, so a 0
-# exit code is a hard guarantee that the AIDL stack is running.
-#
-# API >= 35 ALONE is deliberately NOT used as a fallback: many Android 15 OEMs
-# (e.g. MediaTek A15 devices, some Xiaomi/Samsung branches) still ship the
-# legacy audio effect HAL and would break silently if forced into AIDL mode.
-if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
-  if service check android.hardware.audio.effect.IFactory 1>/dev/null 2>&1; then
-    ui_print "    ! IFactory Binder service confirmed — enabling AIDL (Signal 5)"
-    USE_AIDL=true
-  fi
+# A4 — audio_effects_config.xml present without any legacy effects file
+if [ -f "/vendor/etc/audio_effects_config.xml" ] && \
+   ! [ -f "/vendor/etc/audio_effects.conf" ] && \
+   ! [ -f "/vendor/etc/audio_effects.xml" ]; then
+  ui_print "    [AIDL A4] AIDL-era audio_effects_config.xml found"
+  AIDL_SCORE=$((AIDL_SCORE + 2))
 fi
 
-# ── Signal 6: Final safe default ─────────────────────────────────────────────
-# If no signal above resolved USE_AIDL, default to legacy.  This is the safe
-# choice: a wrongly-installed legacy driver fails gracefully (effect not found
-# → disabled), whereas a wrongly-installed AIDL driver on a legacy-only device
-# causes AudioEffect creation exceptions and a permanently broken audio stack.
-# No API-level guess here — see above.
-if ! $USE_AIDL && ! $LEGACY_CONFIRMED; then
+# A5 — Running AIDL service name (getprop) or ps scan
+if [ "$(getprop init.svc.vendor.audio-hal-aidl 2>/dev/null)" = "running" ] || \
+   [ "$(getprop init.svc.vendor.audio-effect-hal-aidl 2>/dev/null)" = "running" ]; then
+  ui_print "    [AIDL A5] AIDL HAL service property running"
+  AIDL_SCORE=$((AIDL_SCORE + 3))
+elif [ "$API" -ge 33 ] && \
+     ps -A 2>/dev/null | grep -qE '([Aa]udio[^[:space:]]*[Aa]idl|[Aa]idl[^[:space:]]*[Aa]udio)'; then
+  ui_print "    [AIDL A5] AIDL audio daemon found in ps"
+  AIDL_SCORE=$((AIDL_SCORE + 2))
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# HIDL probes
+# ════════════════════════════════════════════════════════════════════════════
+
+# H1 — HIDL IEffectsFactory registered in hwservicemanager (strongest HIDL signal)
+# android.hardware.audio.effect@X.Y::IEffectsFactory/default
+if service list 2>/dev/null | grep -q "android.hardware.audio.effect@.*IEffectsFactory"; then
+  ui_print "    [HIDL H1] HIDL IEffectsFactory service confirmed"
+  HIDL_SCORE=$((HIDL_SCORE + 10))
+fi
+
+# H2 — libeffectproxy.so: the HIDL effects pipeline proxy; absent on pure-AIDL stacks
+if ls /vendor/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1 || \
+   ls /system/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1; then
+  ui_print "    [HIDL H2] libeffectproxy.so found (HIDL effects proxy)"
+  HIDL_SCORE=$((HIDL_SCORE + 4))
+fi
+
+# H3 — Legacy effect config files
+if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
+   ls /vendor/etc/audio_effects.xml 1>/dev/null 2>&1; then
+  ui_print "    [HIDL H3] Legacy audio_effects config found"
+  HIDL_SCORE=$((HIDL_SCORE + 3))
+fi
+
+# H4 — Vendor VINTF declares <hal format="hidl"> for android.hardware.audio.effect
+if vintf_hal_format "android.hardware.audio.effect" "hidl"; then
+  ui_print "    [HIDL H4] Vendor VINTF declares HIDL audio effect HAL"
+  HIDL_SCORE=$((HIDL_SCORE + 4))
+fi
+
+# H5 — HIDL IEffectsFactory listed via service list (fallback if H1 missed it)
+# Some OEMs rename the service; check hwservicemanager listing too.
+if [ "$HIDL_SCORE" -eq 0 ] && \
+   service list 2>/dev/null | grep -q "android.hardware.audio.effect"; then
+  ui_print "    [HIDL H5] HIDL audio effect service listed"
+  HIDL_SCORE=$((HIDL_SCORE + 2))
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# Resolution
+# ════════════════════════════════════════════════════════════════════════════
+ui_print "    AIDL score=$AIDL_SCORE  HIDL score=$HIDL_SCORE"
+
+USE_AIDL=false
+if [ "$AIDL_SCORE" -gt 0 ] && [ "$AIDL_SCORE" -ge "$HIDL_SCORE" ]; then
+  # AIDL evidence is present and at least as strong as HIDL evidence.
+  # Even if HIDL shims exist (mid-migration device), AIDL wins.
+  USE_AIDL=true
+elif [ "$HIDL_SCORE" -gt 0 ]; then
+  # Explicit HIDL evidence with no competing AIDL evidence → legacy.
+  USE_AIDL=false
+else
+  # No evidence for either — safe default: legacy.
+  # Wrongly-installed AIDL on a legacy device crashes AudioEffect (versionCode=-1);
+  # wrongly-installed legacy on an AIDL device silently fails to load.
+  # Failing silently is always safer.
   ui_print "    ! No HAL evidence found; defaulting to Legacy (safe fallback)"
+  USE_AIDL=false
 fi
 
 # ── Helper: place_file SRC ORIG_DEVICE_PATH ───────────────────────────────────
