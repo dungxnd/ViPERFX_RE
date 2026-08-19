@@ -137,7 +137,15 @@ public:
         mStatusMQ = std::make_unique<StatusMQ>(kStatusMQDepth, /*configureEventFlag=*/false);
 
         if (!mInputMQ->isValid() || !mOutputMQ->isValid() || !mStatusMQ->isValid()) {
-            ALOGE("open: failed to create FMQ");
+            ALOGE(
+                "open: failed to create FMQ (dataDepth=%zu statusDepth=%zu "
+                "input=%d output=%d status=%d)",
+                kDataMQDepth,
+                kStatusMQDepth,
+                mInputMQ && mInputMQ->isValid(),
+                mOutputMQ && mOutputMQ->isValid(),
+                mStatusMQ && mStatusMQ->isValid()
+            );
             mInputMQ.reset();
             mOutputMQ.reset();
             mStatusMQ.reset();

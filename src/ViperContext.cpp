@@ -151,6 +151,23 @@ std::expected<void, int32_t> ViperContext::HandleSetConfig(const effect_config_t
     CopyBufferConfig(config_.input_cfg, new_config->input_cfg);
     CopyBufferConfig(config_.output_cfg, new_config->output_cfg);
 
+    VIPER_LOGD(
+        "input: frames=%zu rate=%u channels=0x%x format=%u access=%u",
+        config_.input_cfg.buffer.frame_count,
+        config_.input_cfg.sampling_rate,
+        config_.input_cfg.channels,
+        config_.input_cfg.format,
+        config_.input_cfg.access_mode
+    );
+    VIPER_LOGD(
+        "output: frames=%zu rate=%u channels=0x%x format=%u access=%u",
+        config_.output_cfg.buffer.frame_count,
+        config_.output_cfg.sampling_rate,
+        config_.output_cfg.channels,
+        config_.output_cfg.format,
+        config_.output_cfg.access_mode
+    );
+
     if (config_.input_cfg.buffer.frame_count != config_.output_cfg.buffer.frame_count) {
         const auto msg = std::format(
             "Input and output frame count mismatch: in={}, out={}",

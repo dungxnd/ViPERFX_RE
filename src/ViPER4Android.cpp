@@ -69,7 +69,25 @@ int32_t ViperLibraryCreate(
     const effect_uuid_t *uuid, int32_t session_id, int32_t io_id, effect_handle_t *handle
 ) {
     if (uuid == nullptr || handle == nullptr) return -EINVAL;
-    if (!IsMatchingUuid(uuid)) return -ENOENT;
+    if (!IsMatchingUuid(uuid)) {
+        VIPER_LOGE(
+            "ViperLibraryCreate: uuid mismatch (session=%d, io=%d, "
+            "requested=%08x-%04x-%04x-%04x-%02x%02x%02x%02x%02x%02x)",
+            session_id,
+            io_id,
+            uuid->time_low,
+            uuid->time_mid,
+            uuid->time_hi_and_version,
+            uuid->clock_seq,
+            uuid->node[0],
+            uuid->node[1],
+            uuid->node[2],
+            uuid->node[3],
+            uuid->node[4],
+            uuid->node[5]
+        );
+        return -ENOENT;
+    }
 
     // v4a_re builds with -fno-exceptions: use nothrow allocation instead of try/catch.
     std::unique_ptr<ViperHandle> viper_handle{new (std::nothrow) ViperHandle()};
@@ -99,7 +117,10 @@ int32_t ViperLibraryRelease(effect_handle_t handle) {
 
 int32_t ViperLibraryGetDescriptor(const effect_uuid_t *uuid, effect_descriptor_t *descriptor) {
     if (uuid == nullptr || descriptor == nullptr) return -EINVAL;
-    if (!IsMatchingUuid(uuid)) return -ENOENT;
+    if (!IsMatchingUuid(uuid)) {
+        VIPER_LOGE("ViperLibraryGetDescriptor: uuid mismatch");
+        return -ENOENT;
+    }
 
     *descriptor = kViperDescriptor;
     return 0;
