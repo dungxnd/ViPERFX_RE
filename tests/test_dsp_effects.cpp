@@ -48,13 +48,6 @@ static bool all_finite(const std::vector<float>& buf) {
                        [](float v) { return std::isfinite(v); });
 }
 
-// RMS of a buffer.
-static float rms(const std::vector<float>& buf) {
-    double sum = 0.0;
-    for (float v : buf) sum += static_cast<double>(v) * v;
-    return static_cast<float>(std::sqrt(sum / buf.size()));
-}
-
 // ============================================================
 // SoftwareLimiter
 // ============================================================
@@ -124,9 +117,10 @@ TEST(SoftwareLimiter, Inf_Input_ProducesFiniteOutput) {
 TEST(FETCompressor, Disabled_IsPassthrough) {
     FETCompressor comp;
     comp.SetEnable(false);
-    auto buf = sine_stereo(1000.0f, 44100, 480);
+    constexpr uint32_t kF = 480;
+    auto buf = sine_stereo(1000.0f, 44100, kF);
     const auto ref = buf;
-    comp.Process(buf.data(), static_cast<uint32_t>(buf.size()));
+    comp.Process(buf.data(), kF); // size = frame count, not sample count
     EXPECT_FLOAT_EQ(max_abs_diff(buf, ref), 0.0f);
 }
 
@@ -134,9 +128,9 @@ TEST(FETCompressor, Enabled_OutputIsFinite) {
     FETCompressor comp;
     comp.SetEnable(true);
     comp.SetSamplingRate(44100);
-    // Process() takes frame-count pairs (stereo interleaved), size = num_samples not num_frames.
-    auto buf = sine_stereo(440.0f, 44100, 480);
-    comp.Process(buf.data(), static_cast<uint32_t>(buf.size()));
+    constexpr uint32_t kF = 480;
+    auto buf = sine_stereo(440.0f, 44100, kF);
+    comp.Process(buf.data(), kF);
     EXPECT_TRUE(all_finite(buf));
 }
 
@@ -150,13 +144,12 @@ TEST(FETCompressor, Enabled_OutputEnergyDoesNotExceedInput) {
     comp.SetGainAuto(false);
     comp.SetGainDb(0.0f);
 
-    // Run 2s worth of frames in 480-frame chunks (matches real-world usage).
-    const size_t kFrames = 480;
+    constexpr uint32_t kF = 480;
     float in_energy = 0.0f, out_energy = 0.0f;
     for (int chunk = 0; chunk < 180; ++chunk) {
-        auto buf = sine_stereo(440.0f, 44100, kFrames);
+        auto buf = sine_stereo(440.0f, 44100, kF);
         for (float v : buf) in_energy += v * v;
-        comp.Process(buf.data(), static_cast<uint32_t>(buf.size()));
+        comp.Process(buf.data(), kF);
         for (float v : buf) out_energy += v * v;
     }
     EXPECT_LE(out_energy, in_energy * 1.01f);
@@ -166,11 +159,12 @@ TEST(FETCompressor, Reset_ProducesFiniteOutput) {
     FETCompressor comp;
     comp.SetEnable(true);
     comp.SetSamplingRate(48000);
-    auto buf = sine_stereo(1000.0f, 48000, 480);
-    comp.Process(buf.data(), static_cast<uint32_t>(buf.size()));
+    constexpr uint32_t kF = 480;
+    auto buf = sine_stereo(1000.0f, 48000, kF);
+    comp.Process(buf.data(), kF);
     comp.Reset();
-    auto buf2 = sine_stereo(1000.0f, 48000, 480);
-    comp.Process(buf2.data(), static_cast<uint32_t>(buf2.size()));
+    auto buf2 = sine_stereo(1000.0f, 48000, kF);
+    comp.Process(buf2.data(), kF);
     EXPECT_TRUE(all_finite(buf2));
 }
 
