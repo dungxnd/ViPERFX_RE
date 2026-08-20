@@ -113,6 +113,7 @@ jobs:
             -DANDROID_ABI=${{ matrix.abi }} \
             -DANDROID_PLATFORM=android-21 \
             -DANDROID_ARM_NEON=TRUE \
+            -DANDROID_STL=c++_static \
             -DCMAKE_C_COMPILER="${AOSP_CLANG}" \
             -DCMAKE_CXX_COMPILER="${AOSP_CLANGXX}" \
             -DCMAKE_BUILD_TYPE=Release \

@@ -13,6 +13,22 @@ add_compile_definitions(VERSION_NAME="${VERSION_NAME}")
 
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
+# ANDROID_STL=c++_static must be passed at cmake configure time (via -D on the
+# cmake command line or the NDK toolchain wrapper).  It is NOT set here because
+# CMakeLists.txt is evaluated after the toolchain file, so the variable would
+# arrive too late for the NDK toolchain to wire up the correct sysroot STL paths.
+#
+# Why static libc++ is required:
+#   ViPERDSP uses C++26 stdlib features (std::inplace_vector, std::submdspan,
+#   C++26 contracts, etc.) that do not exist in the frozen /system/lib64/libc++.so
+#   shipped on any Android device.  Linking libc++ statically bakes every new
+#   stdlib symbol directly into the .so, making it self-contained and safe to
+#   load on Android 5.0 (API 21) through any future release.
+#
+# The flag is set in:
+#   • Makefile  — all three cmake invocations (dsp-*, libs, aidl-*)
+#   • .github/workflows/build.yml — build-dsp cmake step
+
 add_compile_options(
     -O3 -DNDEBUG
     -ffunction-sections -fdata-sections
