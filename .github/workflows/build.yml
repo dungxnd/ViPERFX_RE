@@ -245,7 +245,7 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r29
+          ndk-version: r30-beta2
           add-to-path: false
 
       - name: Set version variables
