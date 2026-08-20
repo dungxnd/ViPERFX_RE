@@ -20,7 +20,20 @@ add_compile_options(
     -fno-unwind-tables -fno-asynchronous-unwind-tables
     -fvisibility=hidden -fvisibility-inlines-hidden)
 
-add_subdirectory(ViPERDSP)
+# When VIPERDSP_PREBUILT_LIB is set (absolute path to libViPERDSP.a built by
+# a separate AOSP-Clang invocation), import it as a pre-built static target
+# instead of compiling from source.  The include paths still come from the
+# in-tree ViPERDSP/ directory so headers stay in sync with the binary.
+if(DEFINED VIPERDSP_PREBUILT_LIB)
+    add_library(ViPERDSP STATIC IMPORTED GLOBAL)
+    set_target_properties(ViPERDSP PROPERTIES
+        IMPORTED_LOCATION "${VIPERDSP_PREBUILT_LIB}")
+    target_include_directories(ViPERDSP INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/ViPERDSP"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ViPERDSP/include")
+else()
+    add_subdirectory(ViPERDSP)
+endif()
 
 # ----------------------------------------------------------------------------
 # Non-AIDL (legacy) module

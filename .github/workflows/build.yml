@@ -49,11 +49,89 @@ permissions:
   contents: write
   pull-requests: read
 
+env:
+  # Update to the latest revision from:
+  # https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/
+  AOSP_CLANG_REV: clang-r596125
+
 jobs:
+  # ── AOSP Clang: build ViPERDSP.a with bleeding-edge compiler ─────────────
+  # ViPERDSP is compiled once per ABI with AOSP Clang (+ NDK sysroot) and
+  # uploaded as a standalone .a artifact.  The NDK build jobs below then link
+  # against this prebuilt rather than recompiling from source, giving us
+  # the latest Clang front-end / optimiser for the DSP layer while the Android
+  # HAL wrapper (v4a_re / v4a_aidl) is built by the stable NDK toolchain.
+  build-dsp:
+    name: Build DSP (${{ matrix.abi }}, AOSP Clang)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Android NDK (sysroot only)
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r30-beta2
+          add-to-path: false
+
+      - name: Set version variables
+        id: ver
+        run: |
+          echo "name=$(grep '^version=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "code=$(grep '^versionCode=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch AOSP Clang ${{ env.AOSP_CLANG_REV }} (bin/ only)
+        run: |
+          git clone --depth=1 --filter=blob:none --no-checkout \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/${{ env.AOSP_CLANG_REV }} \
+            aosp-clang
+          cd aosp-clang
+          git sparse-checkout init --cone
+          git sparse-checkout set bin
+          git checkout
+          chmod +x bin/*
+          echo "AOSP Clang: $(./bin/clang++ --version | head -1)"
+
+      - name: Build ViPERDSP.a (${{ matrix.abi }})
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          NDK_SYSROOT="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          cmake -B build/dsp/${{ matrix.abi }} \
+            -DCMAKE_C_COMPILER="${PWD}/aosp-clang/bin/clang" \
+            -DCMAKE_CXX_COMPILER="${PWD}/aosp-clang/bin/clang++" \
+            -DCMAKE_SYSROOT="${NDK_SYSROOT}" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=21 \
+            -DCMAKE_ANDROID_ARCH_ABI=${{ matrix.abi }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DVERSION_NAME="${{ steps.ver.outputs.name }}" \
+            -DVERSION_CODE="${{ steps.ver.outputs.code }}" \
+            ViPERDSP
+          cmake --build build/dsp/${{ matrix.abi }} --target ViPERDSP \
+            --parallel $(nproc)
+
+      - name: Upload ViPERDSP.a artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: libViPERDSP-${{ matrix.abi }}-${{ steps.ver.outputs.name }}
+          path: build/dsp/${{ matrix.abi }}/libViPERDSP.a
+          retention-days: 1
+
   # ── Non-AIDL: compile both ABIs in parallel ──────────────────────────────
   build:
     name: Build (${{ matrix.abi }})
     runs-on: ubuntu-latest
+    needs: build-dsp
 
     strategy:
       fail-fast: false
@@ -78,6 +156,12 @@ jobs:
         run: |
           echo "name=$(grep '^version=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
           echo "code=$(grep '^versionCode=' module/module.prop | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Download prebuilt ViPERDSP.a
+        uses: actions/download-artifact@v8
+        with:
+          name: libViPERDSP-${{ matrix.abi }}-${{ steps.ver.outputs.name }}
+          path: out/dsp/
 
       - name: Build ${{ matrix.abi }}
         env:
@@ -228,7 +312,7 @@ jobs:
   build-aidl:
     name: Build AIDL (${{ matrix.abi }})
     runs-on: ubuntu-latest
-    needs: aidl-gen
+    needs: [aidl-gen, build-dsp]
 
     strategy:
       fail-fast: false
@@ -259,6 +343,12 @@ jobs:
         with:
           name: aidl-gen-${{ steps.ver.outputs.name }}
           path: aidl-gen/
+
+      - name: Download prebuilt ViPERDSP.a
+        uses: actions/download-artifact@v8
+        with:
+          name: libViPERDSP-${{ matrix.abi }}-${{ steps.ver.outputs.name }}
+          path: out/dsp/
 
       - name: Build AIDL ${{ matrix.abi }}
         env:
