@@ -70,7 +70,7 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r29
+          ndk-version: r30-beta2
           add-to-path: false
 
       - name: Set version variables
@@ -113,7 +113,12 @@ jobs:
           AIDL=$(ls $ANDROID_HOME/build-tools/*/aidl 2>/dev/null | sort -V | tail -1)
           echo "Using aidl: $AIDL"
 
+          # Use android17-release on all AOSP repos:
+          #   - stable, actively maintained release branch for Android 17
+          #   - frameworks/native android17-release already removed wstring_convert
+          #     from binder_to_string.h, so no post-copy patch is needed
           git clone --filter=blob:none --no-checkout --depth=1 \
+            --branch android17-release \
             https://android.googlesource.com/platform/hardware/interfaces \
             aosp-interfaces
           cd aosp-interfaces
@@ -128,6 +133,7 @@ jobs:
           cd ..
 
           git clone --filter=blob:none --no-checkout --depth=1 \
+            --branch android17-release \
             https://android.googlesource.com/platform/system/hardware/interfaces \
             aosp-system-interfaces
           cd aosp-system-interfaces
@@ -138,8 +144,11 @@ jobs:
           git checkout
           cd ..
 
-          # libbinder_ndk C++ helper headers removed from NDK in r28
+          # libbinder_ndk C++ helper headers removed from NDK in r28.
+          # android17-release already has wstring_convert removed from
+          # binder_to_string.h — no post-copy patch required.
           git clone --filter=blob:none --no-checkout --depth=1 \
+            --branch android17-release \
             https://android.googlesource.com/platform/frameworks/native \
             aosp-frameworks-native
           cd aosp-frameworks-native
