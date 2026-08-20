@@ -92,14 +92,15 @@ jobs:
       - name: Fetch AOSP Clang ${{ env.AOSP_CLANG_REV }} (bin/ only)
         run: |
           git clone --depth=1 --filter=blob:none --no-checkout \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/${{ env.AOSP_CLANG_REV }} \
-            aosp-clang
-          cd aosp-clang
+            --branch mirror-goog-main-llvm-toolchain-source \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            aosp-clang-repo
+          cd aosp-clang-repo
           git sparse-checkout init --cone
-          git sparse-checkout set bin
+          git sparse-checkout set ${{ env.AOSP_CLANG_REV }}/bin
           git checkout
-          chmod +x bin/*
-          echo "AOSP Clang: $(./bin/clang++ --version | head -1)"
+          chmod +x ${{ env.AOSP_CLANG_REV }}/bin/*
+          echo "AOSP Clang: $(./${{ env.AOSP_CLANG_REV }}/bin/clang++ --version | head -1)"
 
       - name: Build ViPERDSP.a (${{ matrix.abi }})
         env:
@@ -107,8 +108,8 @@ jobs:
         run: |
           NDK_SYSROOT="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           cmake -B build/dsp/${{ matrix.abi }} \
-            -DCMAKE_C_COMPILER="${PWD}/aosp-clang/bin/clang" \
-            -DCMAKE_CXX_COMPILER="${PWD}/aosp-clang/bin/clang++" \
+            -DCMAKE_C_COMPILER="${PWD}/aosp-clang-repo/${{ env.AOSP_CLANG_REV }}/bin/clang" \
+            -DCMAKE_CXX_COMPILER="${PWD}/aosp-clang-repo/${{ env.AOSP_CLANG_REV }}/bin/clang++" \
             -DCMAKE_SYSROOT="${NDK_SYSROOT}" \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_SYSTEM_VERSION=21 \

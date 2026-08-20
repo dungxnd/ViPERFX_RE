@@ -14,9 +14,9 @@ NDK_TOOLCHAIN  := $(ANDROID_NDK_HOME)/build/cmake/android.toolchain.cmake
 # https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/
 # The AOSP_CLANG_DIR variable can be overridden to a local checkout.
 AOSP_CLANG_REV  ?= clang-r596125
-AOSP_CLANG_DIR  ?= $(BUILD_DIR)/aosp-clang/$(AOSP_CLANG_REV)
-AOSP_CLANGXX     = $(AOSP_CLANG_DIR)/bin/clang++
-AOSP_CLANG_BIN   = $(AOSP_CLANG_DIR)/bin/clang
+# Compiler binaries live at <repo>/<rev>/bin/ inside the linux-x86 monorepo.
+AOSP_CLANGXX     = $(BUILD_DIR)/aosp-clang-repo/$(AOSP_CLANG_REV)/bin/clang++
+AOSP_CLANG_BIN   = $(BUILD_DIR)/aosp-clang-repo/$(AOSP_CLANG_REV)/bin/clang
 NDK_SYSROOT      = $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/sysroot
 MIN_SDK        := 21
 MIN_SDK_AIDL   := 33
@@ -65,21 +65,24 @@ test:
 
 
 # ── Fetch AOSP Clang (sparse, bin/ only) ──────────────────────────────────
-# Downloads ~200 MB of compiler binaries once per AOSP_CLANG_REV.
+# Clones the single linux-x86 monorepo on mirror-goog-main-llvm-toolchain-source
+# with a sparse checkout of only <rev>/bin/ (~200 MB, cached on re-run).
+AOSP_CLANG_REPO_DIR ?= $(BUILD_DIR)/aosp-clang-repo
 aosp-clang-fetch:
-	@mkdir -p $(BUILD_DIR)/aosp-clang
+	@mkdir -p $(AOSP_CLANG_REPO_DIR)
 	@if [ ! -x "$(AOSP_CLANGXX)" ]; then \
 	  echo "Fetching AOSP Clang $(AOSP_CLANG_REV) ..."; \
 	  git clone --depth=1 --filter=blob:none --no-checkout \
-	    https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/$(AOSP_CLANG_REV) \
-	    $(AOSP_CLANG_DIR); \
-	  cd $(AOSP_CLANG_DIR) && \
+	    --branch mirror-goog-main-llvm-toolchain-source \
+	    https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+	    $(AOSP_CLANG_REPO_DIR); \
+	  cd $(AOSP_CLANG_REPO_DIR) && \
 	    git sparse-checkout init --cone && \
-	    git sparse-checkout set bin && \
+	    git sparse-checkout set $(AOSP_CLANG_REV)/bin && \
 	    git checkout; \
-	  chmod +x $(AOSP_CLANG_DIR)/bin/*; \
+	  chmod +x $(AOSP_CLANG_REPO_DIR)/$(AOSP_CLANG_REV)/bin/*; \
 	else \
-	  echo "AOSP Clang already present at $(AOSP_CLANG_DIR)"; \
+	  echo "AOSP Clang already present at $(AOSP_CLANGXX)"; \
 	fi
 
 # ── ViPERDSP static lib built with AOSP Clang ─────────────────────────────
@@ -282,7 +285,7 @@ clean:
 
 # Remove only the AOSP Clang checkout (keeps built .so files intact)
 clean-aosp-clang:
-	rm -rf $(BUILD_DIR)/aosp-clang
+	rm -rf $(BUILD_DIR)/aosp-clang-repo
 
 format:
 	@echo "Formatting code with clang-format..."
