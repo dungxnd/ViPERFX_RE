@@ -17,7 +17,6 @@ AOSP_CLANG_REV  ?= clang-r596125
 # Compiler binaries live at <repo>/<rev>/bin/ inside the linux-x86 monorepo.
 AOSP_CLANGXX     = $(BUILD_DIR)/aosp-clang-repo/$(AOSP_CLANG_REV)/bin/clang++
 AOSP_CLANG_BIN   = $(BUILD_DIR)/aosp-clang-repo/$(AOSP_CLANG_REV)/bin/clang
-NDK_SYSROOT      = $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/sysroot
 MIN_SDK        := 21
 MIN_SDK_AIDL   := 33
 ALL_ABIS       := armeabi-v7a arm64-v8a
@@ -93,12 +92,12 @@ $(addprefix dsp-,$(ALL_ABIS)): dsp-%: aosp-clang-fetch
 	@echo "Building ViPERDSP (AOSP Clang) for ABI: $*"
 	@mkdir -p $(BUILD_DIR)/dsp/$*
 	cmake -B $(BUILD_DIR)/dsp/$* \
+	  -DCMAKE_TOOLCHAIN_FILE=$(NDK_TOOLCHAIN) \
+	  -DANDROID_ABI=$* \
+	  -DANDROID_PLATFORM=android-$(MIN_SDK) \
+	  -DANDROID_ARM_NEON=TRUE \
 	  -DCMAKE_C_COMPILER=$(AOSP_CLANG_BIN) \
 	  -DCMAKE_CXX_COMPILER=$(AOSP_CLANGXX) \
-	  -DCMAKE_SYSROOT=$(NDK_SYSROOT) \
-	  -DCMAKE_SYSTEM_NAME=Android \
-	  -DCMAKE_SYSTEM_VERSION=$(MIN_SDK) \
-	  -DCMAKE_ANDROID_ARCH_ABI=$* \
 	  -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
 	  -DVERSION_CODE=$(VERSION_CODE) \
 	  -DVERSION_NAME=$(VERSION_NAME) \
