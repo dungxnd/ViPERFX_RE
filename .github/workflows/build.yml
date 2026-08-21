@@ -105,17 +105,15 @@ jobs:
       - name: Build ViPERDSP.a (${{ matrix.abi }})
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CC: ${{ github.workspace }}/aosp-clang-repo/${{ env.AOSP_CLANG_REV }}/bin/clang
+          CXX: ${{ github.workspace }}/aosp-clang-repo/${{ env.AOSP_CLANG_REV }}/bin/clang++
         run: |
-          AOSP_CLANGXX="${PWD}/aosp-clang-repo/${{ env.AOSP_CLANG_REV }}/bin/clang++"
-          AOSP_CLANG="${PWD}/aosp-clang-repo/${{ env.AOSP_CLANG_REV }}/bin/clang"
           cmake -B build/dsp/${{ matrix.abi }} \
             -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=${{ matrix.abi }} \
             -DANDROID_PLATFORM=android-21 \
             -DANDROID_ARM_NEON=TRUE \
             -DANDROID_STL=c++_static \
-            -DCMAKE_C_COMPILER="${AOSP_CLANG}" \
-            -DCMAKE_CXX_COMPILER="${AOSP_CLANGXX}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DVERSION_NAME="${{ steps.ver.outputs.name }}" \
             -DVERSION_CODE="${{ steps.ver.outputs.code }}" \
