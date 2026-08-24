@@ -1,0 +1,14 @@
+# Folders
+.idea/
+build/
+tools/
+**/__pycache__/
+.clang-format
+.clang-format-ignore
+.repomixignore
+
+# Specific numbered header files (VHE_L1.h, VHE_L2.h, etc.)
+**/VHE_L[0-9]*.h
+
+**.exe
+ViPERDSP/
