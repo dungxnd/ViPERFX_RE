@@ -32,3 +32,15 @@ allow hal_audio_default appdomain binder { call transfer }
 allow untrusted_app hal_audio_service service_manager { find }
 allow untrusted_app_all hal_audio_service service_manager { find }
 allow untrusted_app_all audioserver binder { call transfer }
+
+# Allow Audio HAL and audioserver to access SHM files in /data/local/tmp/v4a
+# (shell_data_file context — set by service.sh and ConfigChannel.kt via chcon).
+# Without these rules, SELinux Enforcing blocks the HAL from mapping the SHM
+# files that carry ViPERParams / status data, silently breaking parameter
+# delivery and driver-status reporting.
+allow hal_audio_default shell_data_file dir { search read open getattr write add_name }
+allow hal_audio_default shell_data_file file { read write open getattr map create }
+allow hal_audio_server  shell_data_file dir { search read open getattr write add_name }
+allow hal_audio_server  shell_data_file file { read write open getattr map create }
+allow audioserver       shell_data_file dir { search read open getattr write add_name }
+allow audioserver       shell_data_file file { read write open getattr map create }

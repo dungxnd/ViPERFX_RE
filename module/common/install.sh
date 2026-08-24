@@ -32,22 +32,31 @@ ui_print "- Detecting audio HAL type..."
 # vintf_hal_format HAL_NAME FORMAT  →  returns 0 if vendor VINTF has a <hal>
 # block with <name>HAL_NAME</name> and format="FORMAT" attribute.
 # Searches /vendor/etc/vintf/, /vendor/manifest.xml, /odm/etc/vintf/ only.
+#
+# FIX: The original used `grep -rl ... | while read -r f; do ... return 0; done`
+# which runs the while loop in a pipeline subshell.  A `return 0` inside the
+# loop only terminates the subshell — the parent function always reaches
+# `return 1`.  Replaced with a word-splitting-safe `for f in $(...)` form so
+# the loop body executes in the function's own shell context.
 vintf_hal_format() {
   local name="$1" fmt="$2"
-  grep -rl "$name" \
-       /vendor/etc/vintf/ /vendor/manifest.xml \
-       /odm/etc/vintf/ 2>/dev/null | \
-  while read -r f; do
-    awk -v name="$name" -v fmt="$fmt" '
+  local files
+  files="$(grep -rl "$name" /vendor/etc/vintf/ /vendor/manifest.xml \
+           /odm/etc/vintf/ 2>/dev/null)"
+  [ -z "$files" ] && return 1
+  for f in $files; do
+    if awk -v name="$name" -v fmt="$fmt" '
       /<hal/{in_hal=1; has_fmt=0; has_name=0}
       in_hal && $0 ~ ("format=\"" fmt "\""){has_fmt=1}
       in_hal && $0 ~ name {has_name=1}
       in_hal && /<\/hal>/{
-        if(has_fmt && has_name){found=1; exit}
+        if(has_fmt && has_name){found=1; exit 0}
         in_hal=0
       }
       END{exit !found}
-    ' "$f" 2>/dev/null && return 0
+    ' "$f" 2>/dev/null; then
+      return 0
+    fi
   done
   return 1
 }

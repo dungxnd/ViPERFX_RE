@@ -129,15 +129,37 @@ inline constexpr std::string_view kImplementorName  = VIPER_AUTHORS;
 //       [12..15] command  (2=CONVOLVER_PATH, 4=CONVOLVER_RESET)
 //       [16..19] data size
 //       [32..]   payload: null-terminated UTF-8 path
+//
+//   shm_status.bin (256 bytes):
+//     Header (20 bytes):
+//       [0..3]   magic  (0x534D3456)
+//       [4..7]   format version
+//       [8..11]  status sequence counter — incremented on every write;
+//                ConfigChannel.readStatus() skips a read when seq==0
+//       [12..19] reserved
+//     Data block at offset 20 (matches ConfigChannel.kt STATUS_DATA_OFFSET):
+//       [+0 ..+3]  isEnabled  (int32)
+//       [+4 ..+7]  isConfigured (int32)
+//       [+8 ..+15] processedFrames (uint64)
+//       [+16..+19] sampleRate (int32)
+//       [+20..+23] versionCode (int32)
+//       [+24..+87] versionName (char[64], null-terminated)
+//       [+88..+119] architecture (char[32], null-terminated)
 // ---------------------------------------------------------------------------
 class ShmChannel {
 public:
     // SHM layout constants (must match ConfigChannel.kt)
     static constexpr size_t kParamsShmSize  = 4096;
     static constexpr size_t kBulkShmSize    = 4096;
+    static constexpr size_t kStatusShmSize  = 256;
     static constexpr uint32_t kShmMagic    = 0x534D3456u;
     static constexpr uint32_t kFormatVer   = 6u;
     static constexpr size_t kParamsStructSize = 1164; // ViperParamsLayout.SIZE
+
+    // Status SHM: sequence counter is at byte 8 (matches ConfigChannel.readStatus line 295)
+    static constexpr int32_t kStatusSeqOffset  = 8;
+    // Data payload starts at byte 20 (STATUS_DATA_OFFSET in ConfigChannel.kt)
+    static constexpr int32_t kStatusDataOffset = 20;
 
     static constexpr int32_t kParamsActiveOffset     = 8;
     static constexpr int32_t kParamsUpdateCountOffset = 12;
@@ -161,11 +183,15 @@ public:
     ShmChannel(const ShmChannel&)            = delete;
     ShmChannel& operator=(const ShmChannel&) = delete;
 
-    // Open + mmap both shm files.  Non-fatal: if either file is missing the
-    // ShmChannel stays disabled and pollParams/pollBulk are no-ops.
+    // Open + mmap all three shm files.  Non-fatal: if any file is missing the
+    // ShmChannel stays partially disabled; the relevant operation becomes a no-op.
     void open() {
         paramsPtr_ = mapFile("/data/local/tmp/v4a/shm_params.bin", kParamsShmSize);
         bulkPtr_   = mapFile("/data/local/tmp/v4a/shm_bulk.bin",   kBulkShmSize);
+        // shm_status.bin is opened read-write: the driver writes status data to it
+        // and the app (ConfigChannel.readStatus()) reads from it.  The file is
+        // created if absent (the app may not have run yet, but we can pre-create it).
+        statusPtr_ = mapFileRW("/data/local/tmp/v4a/shm_status.bin", kStatusShmSize);
         if (paramsPtr_) {
             ALOGD("ShmChannel: params mmap OK");
         } else {
@@ -176,12 +202,16 @@ public:
         } else {
             ALOGE("ShmChannel: bulk mmap failed — DDC/convolver will not be applied");
         }
+        if (statusPtr_) {
+            ALOGD("ShmChannel: status mmap OK");
+        } else {
+            ALOGE("ShmChannel: status mmap failed — driver status will not be visible to app");
+        }
     }
 
     // Retry mapping whichever files were absent at open() time.
-    // Called from the worker loop on every iteration until both are mapped.
-    // Once both ptrs are non-null this becomes a single null-check branch — no
-    // syscalls, no log spam.
+    // Called from the worker loop on every iteration until all are mapped.
+    // Once all ptrs are non-null this becomes three cheap null-check branches.
     void tryOpenMissing() noexcept {
         if (!paramsPtr_) {
             paramsPtr_ = mapFile("/data/local/tmp/v4a/shm_params.bin",
@@ -193,6 +223,59 @@ public:
                                kBulkShmSize, /*silent_enoent=*/true);
             if (bulkPtr_) ALOGI("ShmChannel: bulk mmap OK (late open)");
         }
+        if (!statusPtr_) {
+            statusPtr_ = mapFileRW("/data/local/tmp/v4a/shm_status.bin",
+                                   kStatusShmSize, /*silent_enoent=*/true);
+            if (statusPtr_) ALOGI("ShmChannel: status mmap OK (late open)");
+        }
+    }
+
+    // Write current driver status into shm_status.bin so ConfigChannel.readStatus()
+    // in the Android app can display accurate driver info (version, arch, frames, etc.)
+    // without the legacy effect_param_t GET_PARAM round-trip.
+    //
+    // Called from workerLoop after every successful audio frame batch.
+    void updateStatus(bool enabled, bool configured,
+                      uint64_t processedFrames, uint32_t sampleRate) noexcept {
+        if (!statusPtr_) return;
+        auto* base = static_cast<uint8_t*>(statusPtr_);
+
+        // Write header: magic, format version (first call only; harmless to repeat).
+        uint32_t magic = kShmMagic;
+        uint32_t ver   = kFormatVer;
+        std::memcpy(base,     &magic, sizeof(magic));
+        std::memcpy(base + 4, &ver,   sizeof(ver));
+
+        // Increment status sequence counter so ConfigChannel.readStatus() sees a change.
+        statusSeq_++;
+        std::memcpy(base + kStatusSeqOffset, &statusSeq_, sizeof(statusSeq_));
+
+        // Data block at kStatusDataOffset — layout must match parseStatusFromShm() in
+        // ConfigChannel.kt (STATUS_DATA_OFFSET = 20):
+        //   +0   isEnabled    (int32)
+        //   +4   isConfigured (int32)
+        //   +8   processedFrames (uint64)
+        //   +16  sampleRate   (int32)
+        //   +20  versionCode  (int32)
+        //   +24  versionName  (char[64])
+        //   +88  architecture (char[32])
+        uint8_t* data = base + kStatusDataOffset;
+        int32_t isEnabled    = enabled    ? 1 : 0;
+        int32_t isConfigured = configured ? 1 : 0;
+        int32_t rate         = static_cast<int32_t>(sampleRate);
+        int32_t vCode        = VERSION_CODE;
+        std::memcpy(data +  0, &isEnabled,       sizeof(int32_t));
+        std::memcpy(data +  4, &isConfigured,    sizeof(int32_t));
+        std::memcpy(data +  8, &processedFrames, sizeof(uint64_t));
+        std::memcpy(data + 16, &rate,            sizeof(int32_t));
+        std::memcpy(data + 20, &vCode,           sizeof(int32_t));
+
+        char nameBuf[64] = {};
+        char archBuf[32] = {};
+        std::strncpy(nameBuf, VERSION_NAME,      sizeof(nameBuf) - 1);
+        std::strncpy(archBuf, VIPER_ARCHITECTURE, sizeof(archBuf) - 1);
+        std::memcpy(data + 24, nameBuf, sizeof(nameBuf));
+        std::memcpy(data + 88, archBuf, sizeof(archBuf));
     }
 
     // Poll the params SHM for a new snapshot.  Returns the active-slot pointer
@@ -293,13 +376,15 @@ public:
 private:
     void* paramsPtr_ { nullptr };
     void* bulkPtr_   { nullptr };
+    void* statusPtr_ { nullptr };
 
     uint32_t lastParamsCounter_  { 0 };
     int32_t  lastDdcSeq_         { 0 };
     int32_t  lastConvolverSeq_   { 0 };
+    uint32_t statusSeq_          { 0 };
 
-    // silent_enoent: if true, suppress the error log when the file simply does
-    // not exist yet (used by tryOpenMissing() to avoid per-frame log spam).
+    // Read-only mmap (for params + bulk).
+    // silent_enoent: suppress the ENOENT log (used by tryOpenMissing()).
     static void* mapFile(const char* path, size_t size,
                          bool silent_enoent = false) noexcept {
         int fd = ::open(path, O_RDONLY | O_CLOEXEC);
@@ -323,9 +408,41 @@ private:
         return ptr;
     }
 
+    // Read-write mmap (for status).  Creates the file if absent so the driver
+    // can start writing status before the app has called ensureInitialized().
+    static void* mapFileRW(const char* path, size_t size,
+                           bool silent_enoent = false) noexcept {
+        int fd = ::open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0 && errno == ENOENT) {
+            // File absent — create it (mode 0666 so both app + HAL can map it).
+            fd = ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+            if (fd >= 0) {
+                if (::ftruncate(fd, static_cast<off_t>(size)) != 0) {
+                    ALOGE("ShmChannel: ftruncate(%s, %zu) failed: %s",
+                          path, size, strerror(errno));
+                    ::close(fd);
+                    return nullptr;
+                }
+            }
+        }
+        if (fd < 0) {
+            if (!silent_enoent || errno != ENOENT)
+                ALOGE("ShmChannel: open-rw(%s) failed: %s", path, strerror(errno));
+            return nullptr;
+        }
+        void* ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        ::close(fd);
+        if (ptr == MAP_FAILED) {
+            ALOGE("ShmChannel: mmap-rw(%s, %zu) failed: %s", path, size, strerror(errno));
+            return nullptr;
+        }
+        return ptr;
+    }
+
     void unmap() noexcept {
-        if (paramsPtr_) { ::munmap(paramsPtr_, kParamsShmSize); paramsPtr_ = nullptr; }
+        if (paramsPtr_) { ::munmap(paramsPtr_, kParamsShmSize);  paramsPtr_ = nullptr; }
         if (bulkPtr_)   { ::munmap(bulkPtr_,   kBulkShmSize);   bulkPtr_   = nullptr; }
+        if (statusPtr_) { ::munmap(statusPtr_, kStatusShmSize); statusPtr_ = nullptr; }
     }
 };
 
@@ -710,10 +827,22 @@ private:
             // Write processed samples to output MQ
             mOutputMQ->write(mWorkerBuf.data(), avail);
 
-            // Signal status
+            // Signal FMQ status to audioserver
             IEffect::Status st = { STATUS_OK, static_cast<int32_t>(avail),
                                               static_cast<int32_t>(avail) };
             mStatusMQ->write(&st, 1);
+
+            // Update driver status SHM so ConfigChannel.readStatus() in the app
+            // can report version, arch, processedFrames, and sample rate.
+            {
+                std::unique_lock lock(mMutex);
+                mShm.updateStatus(
+                    /*enabled=*/    true,
+                    /*configured=*/ true,
+                    mContext.viper().GetProcessedFrames(),
+                    mSampleRate
+                );
+            }
         }
         ALOGD("worker: stopped");
     }
