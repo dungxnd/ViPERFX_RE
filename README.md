@@ -4,33 +4,85 @@ A reverse-engineered, modernized port of ViPER4Android. The DSP has been re-impl
 
 ## Module Architecture
 
-ViPERFX_RE ships as a **single unified Magisk/KSU/APatch module** built around the `ViPERDSP` engine. The installer (`install.sh`) **auto-detects the device's audio HAL type at flash time** and installs the correct variant automatically — you do not need to choose or flash two modules.
+ViPERFX_RE ships as a **single unified Magisk / KernelSU / APatch module** built around the high-performance `ViPERDSP` engine. The installer (`customize.sh`) **auto-detects the device's audio HAL type at flash time** and installs the correct driver variant (`libv4a_aidl.so` or `libv4a_re.so`) automatically — you do not need to choose or flash separate packages.
 
-### How auto-detection works
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ViPER4Android RE App                     │
+└──────────────┬───────────────────────────────▲──────────────┘
+               │                               │
+       [AIDL / Android 13+]          [Non-AIDL / Android 5–14]
+   Memory-Mapped SHM IPC Channel       Classic effect_param_t
+    (/data/local/tmp/v4a/)                 via audioserver
+               │                               │
+               ▼                               ▼
+       ┌───────────────┐               ┌───────────────┐
+       │libv4a_aidl.so │               │ libv4a_re.so  │
+       └───────┬───────┘               └───────┬───────┘
+               │                               │
+               └───────────────┬───────────────┘
+                               ▼
+               ┌───────────────────────────────┐
+               │          ViPERDSP             │
+               │   C++23/26 Engine (Planar)    │
+               │ • 23 DSP audio effects        │
+               │ • Pure float32 / NEON vector  │
+               │ • DoubleBufferedState atomics │
+               └───────────────────────────────┘
+```
 
-The installer probes five signals in priority order:
+### How Auto-Detection Works
 
-1. **Legacy negative guard** — presence of `audio_effects.conf`, `audio_effects.xml`, or `libeffectproxy.so` suggests a legacy stack.
-2. **VINTF override** — if a VINTF manifest in `/vendor/etc/vintf/`, `/vendor/manifest.xml`, `/odm/etc/vintf/`, or `/system/etc/vintf/` declares `android.hardware.audio.effect`, the device runs AIDL regardless of legacy XML files left for 32-bit compat.
-3. **Static filesystem** — AIDL HAL binaries in `/vendor/bin/hw/` or `/apex/`, or the AOSP AIDL config filename `audio_effects_config.xml`.
-4. **Runtime property** — `init.svc.vendor.audio-hal-aidl = running`.
-5. **API tiebreaker** — API ≥ 35 defaults to AIDL only when no FS evidence was found (AOSP removed legacy HAL in Android 15, but many OEMs keep legacy stacks).
+During module installation, `customize.sh` executes an **AOSP-aligned 7-tier symmetric scoring engine** to evaluate whether the host device runs a modern AIDL audio HAL or a legacy HIDL/classic audio HAL stack:
 
-### Non-AIDL (Legacy) variant
+| Tier | Evaluation Target | Description | Score Weight |
+| :--- | :--- | :--- | :--- |
+| **Tier 0** | **Manual Overrides & Boundaries** | Forces mode via `/data/local/tmp/v4a_force_aidl` or `/data/local/tmp/v4a_force_legacy`. Android $\le 12$ (API $\le 32$) lacks AIDL audio HAL support and is strictly locked to Legacy. | Immediate / Override |
+| **Tier 1** | **Definitive Runtime Services** | Checks `ServiceManager` for `android.hardware.audio.effect.IFactory/default` and `android.hardware.audio.core.IModule/default`, or probes `lshal` for AIDL vs HIDL (`IEffectsFactory` / `IDevicesFactory`) services. | $\pm 15$ to $20\text{ pts}$ |
+| **Tier 2** | **VINTF Manifests** | Scans `/vendor/etc/vintf/`, `/odm/`, `/apex/`, and OEM product manifests for declared `format="aidl"` vs `format="hidl"` audio HAL entries. | $\pm 10$ to $15\text{ pts}$ |
+| **Tier 3** | **Active HAL Daemons & Properties** | Probes active init services (`vendor.audio-hal-aidl`, `secaudiohalaidl`, `oplus`, `vivo`, `mediatek`) and running process trees. | $\pm 8$ to $10\text{ pts}$ |
+| **Tier 4** | **Hardware Binaries & Libraries** | Inspects `/vendor/bin/hw/` and APEX modules for AIDL HAL binaries, or detects `libeffectproxy.so` (exclusive to HIDL). | $\pm 6\text{ pts}$ |
+| **Tier 5** | **Effect Config Signatures** | Detects pure `audio_effects_config.xml` (AIDL) vs legacy `audio_effects.conf`. | $\pm 4$ to $6\text{ pts}$ |
+| **Tier 6** | **OS Version Baseline Prior** | Android 15+ (API 35+) removed HIDL audio HAL support (+12 AIDL); Android 14 (API 34) defaults to AIDL (+4 AIDL). | Baseline |
 
-Uses the **classic Android audio effect plugin interface** (often informally referred to as the "HIDL-based" path).
+### Driver Variants & Communication Protocols
 
-- **Why it no longer works on Android 15+:** Google migrated the audio effect framework to a stable AIDL HAL implementation. Devices launching with Android 15 no longer support loading `effect_handle_t` plugins. See [AIDL for HALs](https://source.android.com/docs/core/architecture/aidl/aidl-hals) for more details.
+#### 1. AIDL Variant (`libv4a_aidl.so`)
+* **Platform:** Designed for Android 13+ (mandatory on Android 15+).
+* **Audio Frame Path:** Audio frames and effect states travel across the standard **AOSP Fast Message Queue (Data MQ / Status MQ)** inside the vendor audio HAL process.
+* **Control & Telemetry Channel:** Control parameters, impulse responses, and telemetry between the ViPER4Android companion app and the driver travel over a **lock-free, memory-mapped Shared Memory (SHM) interface** in `/data/local/tmp/v4a/`:
+  - `shm_params.bin` (4096 bytes): Double-buffered slot exchange (magic `0x534D3456`, format version 6, update counter, active slot index, `ViPERParams` struct) ensuring zero audio glitching or locking on the real-time audio thread.
+  - `shm_bulk.bin` (4096 bytes): Fast streaming sub-channel for DDC filter coefficients and Convolver impulse response file paths.
+  - `shm_status.bin` (256 bytes): Live driver telemetry written directly by `libv4a_aidl.so` (enabled state, configured state, 64-bit processed frame counter, active sample rate, version code) read by the app to display real-time status.
 
-### AIDL variant
+#### 2. Non-AIDL / Legacy Variant (`libv4a_re.so`)
+* **Platform:** For Android 5.0 through Android 14 devices utilizing classic HALs.
+* **Audio & Control Path:** Runs inside `audioserver`. Parameters are passed via the standard Android `effect_param_t` command interface (`EFFECT_CMD_SET_PARAM` / `EFFECT_CMD_GET_PARAM`). No SHM files are used.
 
-Implements the **modern audio effect HAL** introduced in Android 13, which became the only officially supported audio effect path for devices launching with Android 15 and later. Uses the standard AOSP AIDL Fast Message Queue (FMQ) for parameter passing — no custom shared-memory files are required.
+### Boot Sequence & System Integration
 
-## Disclaimers
+The module performs low-level integration at multiple stages of the Android boot process:
 
-- **Tested hardware is narrow.** Non-AIDL is confirmed on Pixel 8 Pro / Android 14. AIDL is confirmed on Pixel 8 Pro / Android 16. Other devices may bootloop, may need vendor-specific shims (e.g. ShadoV's [PIXAML](https://github.com/ShadoV90/PIXAML) for AIDL on some Pixels), or may simply do nothing. Make a backup before flashing.
-- **Audio fidelity is best-effort.** The DSP is decompiled from `libv4a_fx.so`. Subtle deviations from the original ViPER4Android are expected. If you spot one, please open a PR — the source is here precisely so it can be improved.
-- **Not for commercial use.** This is a reverse-engineering project and may carry legal restrictions in your jurisdiction. Use at your own risk.
+```
+[Flashing: customize.sh]
+  ├── Detects HAL type (AIDL vs Legacy) via 7-tier scoring
+  ├── Installs 32-bit & 64-bit soundfx libraries
+  ├── Discovers & patches all audio_effects*.xml/conf across OEM partitions
+  └── Prepares partition symlinks for KernelSU / APatch
+
+[Early Boot: post-fs-data.sh]
+  ├── Pre-allocates /data/local/tmp/v4a/ SHM files with 0666/0777 permissions
+  ├── Sets SELinux labels to u:object_r:shell_data_file:s0
+  ├── Resets inhibition properties (ro.audio.ignore_effects=false)
+  └── Injects live SELinux policies (sepolicy.rule / magiskpolicy / ksu_policy)
+
+[Late Boot: service.sh]
+  ├── Waits for sys.boot_completed=1
+  ├── Enters init PID 1 mount namespace (nsenter -t 1 -m)
+  ├── Shadow bind-mounts soundfx libraries and patched audio_effects configs
+  ├── Restarts audio HAL daemons (audioserver, secaudiohalaidl, vendor.audio-hal-aidl)
+  └── Spawns background guardian loop to keep effect properties enabled
+```
 
 ## Installation
 
@@ -39,218 +91,150 @@ Implements the **modern audio effect HAL** introduced in Android 13, which becam
 3. Install the app.
 4. Reboot. Open the app and verify effects are applied (use any of the diagnostic commands below to confirm).
 
-## Troubleshooting
-
 > [!NOTE]
-> Both modules mount the driver `.so` and the `audio_effects*.xml` config into `/vendor` (and `/system` where present). This is verified with **MagiskSU**. If you use **KernelSU** or **APatch**, you may need a metamodule that allows mounting files into `/vendor` and `/system`. And the AIDL module is confirmed not compatible with **AudioModificationLibrary**, so disable it if you want to use AIDL module.
+> - **KernelSU / APatch:** The installer automatically creates partition symlinks (`system/vendor -> vendor`, etc.). If your kernel/ROM environment requires mounting files directly into `/vendor` or `/system`, ensure overlay mounting is enabled or use a metamodule like `meta-overlayfs`.
+> - **Audio Modification Library (AML):** AML is **incompatible** with the AIDL module variant because AML alters or strips AIDL effect registration definitions in `audio_effects_config.xml`. Disable AML when running on Android 14+ AIDL setups.
 
-> [!IMPORTANT]
-> When opening an issue, capture the relevant logs *while reproducing the problem* and attach them. The commands below are listed in the order you should run them when troubleshooting. Run the section that matches your module — the **non-AIDL** steps use `dumpsys`/`logcat` only (no SHM files), while the **AIDL** steps additionally inspect the shared-memory files.
+## Troubleshooting & Diagnostics
 
-### Log Tags
-
-Both drivers (and the shared DSP) log under a single tag, **`ViPER4Android`**. The `AHAL_*` tags come from the AOSP AIDL effect framework and appear only on the AIDL path.
-
-| Tag                  | Module     | Level   |
-| -------------------- | ---------- | ------- |
-| `ViPER4Android`      | both       | D/I/E   |
-| `AHAL_EffectImpl`    | AIDL only  | D/I/V/E |
-| `AHAL_EffectContext` | AIDL only  | E       |
-| `AHAL_EffectThread`  | AIDL only  | V       |
-
-### Non-AIDL (Legacy)
-
-The non-AIDL driver is `libv4a_re.so`. It receives parameters over the classic `effect_param_t` command interface and creates **no** shared-memory files.
-
-#### 1. Check if the driver is loaded
-
+All installation, mount, and daemon restart logs are written to:
 ```bash
-adb logcat -d -s 'ViPER4Android:*' | grep -E 'Welcome|version|created'
+adb shell su -c 'cat /data/adb/viper_install.log'
 ```
 
-Expected (the version line must match the module you flashed):
-
+### 1. Identify Which Mode Was Installed
+Check the installation decision recorded by the installer:
 ```bash
+adb shell su -c 'cat /data/adb/modules/ViPER4Android-RE/aidl_mode.txt'
+```
+* Returns `aidl` or `legacy`.
+
+---
+
+### 2. Diagnostics for AIDL Variant
+
+#### Check Driver Telemetry (SHM Status)
+The AIDL driver continuously writes heartbeat frames and active sample rate to `shm_status.bin`. Inspect the raw status header:
+```bash
+adb shell su -c 'od -tx4 -N 32 /data/local/tmp/v4a/shm_status.bin'
+```
+* Offset `0x00`: Magic `0x534D3456` (`V4MS`)
+* Offset `0x08`: Monotonic status sequence counter (increments on every driver tick)
+* Offset `0x14`: `isEnabled` (`1` = enabled, `0` = disabled)
+* Offset `0x1c`: 64-bit processed frame counter (accumulates while audio plays)
+
+#### Check AIDL Audio HAL Logs
+```bash
+adb logcat -d -s 'ViPER4Android:*' 'AHAL_EffectImpl:*'
+```
+Expected output:
+```
 ViPER4Android: Welcome to ViPER FX
-ViPER4Android: Current version is ...
-ViPER4Android: ViperContext created
-```
-
-If missing, the audio framework never loaded the `.so`. Verify the config was patched (`audio_effects.xml` under `/vendor/etc` and/or `/system/etc`):
-
-```bash
-adb shell su -c 'grep -r v4a /vendor/etc /system/etc 2>/dev/null'
-```
-
-Expected:
-
-```bash
-/vendor/etc/audio_effects.xml:        <library name="v4a_re" path="libv4a_re.so"/>
-/vendor/etc/audio_effects.xml:        <effect name="v4a_standard_re" library="v4a_re" uuid="90380da3-8536-4744-a6a3-5731970e640f"/>
-/system/etc/audio_effects.xml:        <library name="v4a_re" path="libv4a_re.so"/>
-/system/etc/audio_effects.xml:        <effect name="v4a_standard_re" library="v4a_re" uuid="90380da3-8536-4744-a6a3-5731970e640f"/>
-```
-
-Then verify the SELinux label on the library itself:
-
-```bash
-adb shell su -c 'ls -Z /vendor/lib*/soundfx/libv4a_re.so'
-```
-
-Expected:
-
-```bash
-u:object_r:vendor_file:s0 /vendor/lib/soundfx/libv4a_re.so
-u:object_r:vendor_file:s0 /vendor/lib64/soundfx/libv4a_re.so
-```
-
-#### 2. Dump the audioserver effect list
-
-```bash
-adb shell su -c 'dumpsys media.audio_flinger | grep -E -A5 -B7 "90380da3"'
-```
-
-Expected:
-
-```bash
-1 effects for session 0
-    In buffer                         Out buffer                           Active tracks:
-    0xb40000718d612da0 -> 0x72579a1000   0x72579a1000 -> 0xb40000718d612da0   0
-    Effect ID 11:
-        Session State Registered Internal Enabled Suspended:
-        00000   002   y          n        y       n
-        Descriptor:
-        - UUID: 90380da3-8536-4744-a6a3-5731970e640f
-        - TYPE: ec7178ec-e5e1-4432-a3f4-4657e6795210
-        - apiVersion: 00000000
-        - flags: 00005010 (conn. mode: insert, insert pref: last, volume mgmt: none, input mode: direct, output mode: direct)
-        - name: ViPERDSP
-        - implementor: viper.WYF, Martmists, Iscle, llsl
-```
-
-#### 3. Check SELinux denials
-
-```bash
-adb logcat -d -s audit | grep v4a
-# or, broader:
-adb logcat -d | grep -E 'avc.*denied.*(v4a|soundfx)'
-```
-
-If you see `avc: denied` lines naming the audio process and the driver `.so`, the live policy injection from `post-fs-data.sh` did not stick. This is the single most common cause of "module installs cleanly but audio is unprocessed." The legacy effect runs inside `audioserver` (or the legacy audio HAL), not the AIDL service.
-
-### AIDL
-
-The AIDL driver is `libv4a_aidl.so`. Parameters are exchanged via the standard **AOSP AIDL Fast Message Queue (FMQ)** — no custom shared-memory files are created or required.
-
-#### 1. Check if the AIDL driver is loaded
-
-```bash
-adb logcat -d -s 'ViPER4Android:*' | grep -E 'Welcome|version|created'
-```
-
-Expected (the version line must match the module you flashed):
-
-```bash
-ViPER4Android: Welcome to ViPER FX
-ViPER4Android: Current version is ...
-ViPER4Android: ViPER (AIDL) context created, sample_rate=...
+ViPER4Android: ViPER (AIDL) context created, sample_rate=48000
 ViPER4Android: AudioEffect created successfully for session 0
 ViPER4Android: Global effect created (aidlType=true)
 ```
 
-If missing, the audio framework never loaded the `.so`. Verify the config was patched:
-
+#### Check Config Registration
+Verify that `audio_effects_config.xml` includes `libv4a_aidl.so`:
 ```bash
-adb shell su -c 'grep v4a /vendor/etc/audio_effects_config.xml'
+adb shell su -c 'grep -E "v4a_aidl|90380da3" /vendor/etc/audio_effects_config.xml'
 ```
 
-Expected:
-
+#### Verify Audio HAL Process
+Find the vendor audio HAL process and inspect its open files:
 ```bash
-<library name="v4a_aidl" path="libv4a_aidl.so"/>
-<effect name="v4a_standard_aidl" library="v4a_aidl" uuid="90380da3-8536-4744-a6a3-5731970e640f" type="7261676f-6d75-7369-6364-28e2fd3ac39e"/>
+adb shell "ps -A | grep -iE 'audio.*aidl|hardware.audio'"
 ```
 
-Then verify the SELinux label on the library itself:
+---
 
+### 3. Diagnostics for Non-AIDL (Legacy) Variant
+
+#### Check Driver Initialization
 ```bash
-adb shell su -c 'ls -Z /vendor/lib*/soundfx/libv4a_aidl.so'
+adb logcat -d -s 'ViPER4Android:*'
+```
+Expected output:
+```
+ViPER4Android: Welcome to ViPER FX
+ViPER4Android: ViperContext created
 ```
 
-Expected:
-
-```bash
-u:object_r:vendor_file:s0 /vendor/lib/soundfx/libv4a_aidl.so
-u:object_r:vendor_file:s0 /vendor/lib64/soundfx/libv4a_aidl.so
-```
-
-#### 2. Dump the audioserver effect list
-
+#### Inspect AudioFlinger Effect Chain
 ```bash
 adb shell su -c 'dumpsys media.audio_flinger | grep -E -A5 -B7 "90380da3"'
 ```
-
-Expected:
-
-```bash
-1 effects for session 0
-    In buffer                               Out buffer                                 Active tracks:
-    0xb40000778e915020 -> 0xb40000778e959220   0xb40000778e959220 -> 0xb40000778e915020   0
-    Effect ID 1035:
-        Session State Registered Internal Enabled Suspended:
-        00000   003   y          n        y       n
-        Descriptor:
-        - UUID: 90380da3-8536-4744-a6a3-5731970e640f
-        - TYPE: 7261676f-6d75-7369-6364-28e2fd3ac39e
-        - apiVersion: 00020000
-        - flags: 00410208 (conn. mode: insert, insert pref: first, volume mgmt: none, device indication: requires updates, input mode: not set, output mode: not set, hardware acceleration: non-tunneled, offloadable)
-        - name: ViPER4Android
-        - implementor: ViPER520 / RE Team
+Expected output:
+```
+Descriptor:
+- UUID: 90380da3-8536-4744-a6a3-5731970e640f
+- TYPE: ec7178ec-e5e1-4432-a3f4-4657e6795210
+- name: ViPERDSP
 ```
 
-#### 3. Check SELinux denials
-
+#### Verify Config Registration
 ```bash
-adb logcat -d -s audit | grep v4a
-# or, broader:
-adb logcat -d | grep -E 'avc.*denied.*(v4a|soundfx)'
+adb shell su -c 'grep -r "libv4a_re.so" /vendor/etc/audio_effects*.xml /system/etc/audio_effects*.xml 2>/dev/null'
 ```
 
-If you see `avc: denied` lines naming the audio HAL process and the driver `.so`, the live policy injection from `sepolicy.rule` did not stick. This is the single most common cause of "module installs cleanly but audio is unprocessed."
+---
 
-#### 4. Filter logcat by the audio HAL process
-
+### 4. SELinux Audit Denials (Both Variants)
+If the driver fails to load or cannot access shared memory, check for SELinux denials:
 ```bash
-# Find the audio HAL process name (device-specific)
-adb shell ps -A | grep audio
+adb logcat -d | grep -E 'avc.*denied.*(v4a|soundfx|audio)'
 ```
 
-Expected (Pixel 8 Pro):
+---
+
+## Building from Source
+
+### Prerequisites
+- Linux or macOS environment (or WSL on Windows).
+- Android NDK (r27+ recommended). Set `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`.
+- CMake 3.30+, Make, Ninja, and Python 3.
+
+### Build Targets
 
 ```bash
-audioserver   ...  S android.hardware.audio.service-aidl.aoc
-audioserver   ...  S audioserver
+# 1. Run host unit tests (MSVC / Clang / GCC with AddressSanitizer & UndefinedSanitizer)
+make test
+
+# 2. Fetch bleeding-edge AOSP Clang for C++26 ViPERDSP static library compilation
+make aosp-clang-fetch
+
+# 3. Compile the static ViPERDSP core for arm64-v8a and armeabi-v7a
+make dsp-arm64-v8a
+make dsp-armeabi-v7a
+
+# 4. Build Non-AIDL driver libraries (libv4a_re.so)
+make libs
+
+# 5. Generate AIDL C++ stubs from AOSP hardware interfaces
+make aidl-gen
+
+# 6. Build AIDL driver libraries (libv4a_aidl.so)
+make aidl-libs
+
+# 7. Package flashable Magisk/KernelSU/APatch module zip
+make zip
 ```
+The packaged module will be generated under `out/ViPER4Android-RE-<version>.zip`.
 
-Then filter logcat by the HAL PID:
+---
 
-```bash
-adb logcat --pid=$(adb shell pidof android.hardware.audio.service-aidl.aoc | tr -d '\r') -s 'ViPER4Android:*' 'AHAL_EffectImpl:*'
-```
+## Disclaimers
 
-**The HAL process name is device-specific.**
+- **Hardware Diversity:** While tested extensively on Pixel, Samsung, Xiaomi, and MediaTek devices across Android 10 through Android 16, OEM audio implementations vary widely. Always maintain a full device backup before flashing root modules.
+- **Audio Fidelity:** The DSP algorithms are modernized cleanroom implementations based on reverse-engineering of `libv4a_fx.so`. Subtle nuances in ballistics and filtering may differ from legacy 32-bit builds.
+- **Licensing:** Reverse-engineered for compatibility and preservation. Not for commercial use.
 
-## Building
-
-Prerequisites: Android NDK, CMake, Make. Set `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`).
-
-```bash
-make libs     # build libv4a_re.so for arm64-v8a and armeabi-v7a
-make module   # build + stage Magisk module directory
-make zip      # build + package a flashable Magisk module zip
-```
+---
 
 ## Credits
 
-- Zhuhang and ViPER520 — original ViPER4Android.
-- Martmists, Iscle, llsl — reverse-engineering of the DSP.
+- **Zhuhang & ViPER520** — Creators of the original ViPER4Android.
+- **Martmists, Iscle, llsl** — Reverse-engineering of the original DSP routines.
+- **pittvandewitt, MrWhite214, Zackptg5** — Android audio effects development and module packaging.
+- **DungxND** — C++23/26 modernization, planar SIMD architecture, and unified AIDL HAL engine.
