@@ -2,51 +2,131 @@
 # Required for Android 13–16 enforcing mode
 # Supported by Magisk, KernelSU, KernelSU Next, and APatch out-of-the-box.
 
-# Allow Audio HAL to read/execute soundfx libraries in vendor partition
+# ── 1. Audio HAL Vendor Library Execution & Memory ───────────────────────────
+# Standard AOSP Audio HAL
 allow hal_audio_default vendor_file file { read getattr open execute execute_no_trans map }
 allow hal_audio_default same_process_hal_file file { read getattr open execute execute_no_trans map }
 allow hal_audio_default hal_audio_default process { execmem }
-
-# Shared memory / Fast Message Queue (FMQ) support
 allow hal_audio_default ashmem_device chr_file { read write open ioctl }
 allow hal_audio_default ashmem_libcutils_device chr_file { read write open ioctl }
 
-# MediaTek Audio HAL support
+# MediaTek Audio HAL
 allow mtk_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
 allow mtk_hal_audio same_process_hal_file file { read getattr open execute execute_no_trans map }
 allow mtk_hal_audio mtk_hal_audio process { execmem }
 allow mtk_hal_audio ashmem_device chr_file { read write open ioctl }
 allow mtk_hal_audio ashmem_libcutils_device chr_file { read write open ioctl }
 
-# Audioserver: vendor library execution & JIT
+# Samsung OneUI Audio HAL (secaudiohalaidl / hal_audio_samsung)
+allow secaudiohalaidl vendor_file file { read getattr open execute execute_no_trans map }
+allow secaudiohalaidl same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow secaudiohalaidl secaudiohalaidl process { execmem }
+allow secaudiohalaidl ashmem_device chr_file { read write open ioctl }
+allow hal_audio_samsung vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_samsung same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_samsung hal_audio_samsung process { execmem }
+allow hal_audio_samsung ashmem_device chr_file { read write open ioctl }
+
+# OPlus / ColorOS / OxygenOS / Realme UI Audio HAL (hal_audio_oplus / oplus_hal_audio)
+allow hal_audio_oplus vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_oplus same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_oplus hal_audio_oplus process { execmem }
+allow hal_audio_oplus ashmem_device chr_file { read write open ioctl }
+allow oplus_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
+allow oplus_hal_audio same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow oplus_hal_audio oplus_hal_audio process { execmem }
+allow oplus_hal_audio ashmem_device chr_file { read write open ioctl }
+
+# Vivo / iQOO / OriginOS Audio HAL (vivo_hal_audio / hal_audio_vivo)
+allow vivo_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
+allow vivo_hal_audio same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow vivo_hal_audio vivo_hal_audio process { execmem }
+allow vivo_hal_audio ashmem_device chr_file { read write open ioctl }
+allow hal_audio_vivo vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_vivo same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_vivo hal_audio_vivo process { execmem }
+allow hal_audio_vivo ashmem_device chr_file { read write open ioctl }
+
+# Qualcomm & Generic OEM Audio HAL
+allow vendor_hal_audio_default vendor_file file { read getattr open execute execute_no_trans map }
+allow vendor_hal_audio_default same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow vendor_hal_audio_default vendor_hal_audio_default process { execmem }
+allow vendor_hal_audio_default ashmem_device chr_file { read write open ioctl }
+
+# ── 2. Audioserver Execution & Binder IPC ────────────────────────────────────
 allow audioserver vendor_file file { read getattr open execute execute_no_trans map }
 allow audioserver same_process_hal_file file { read getattr open execute execute_no_trans map }
 allow audioserver self:process { execmem }
 
-# Binder IPC between audioserver and HAL
+# Binder IPC between audioserver and HAL daemons
 allow audioserver hal_audio_default binder { call transfer }
 allow hal_audio_default audioserver binder { call transfer }
 allow audioserver mtk_hal_audio binder { call transfer }
 allow mtk_hal_audio audioserver binder { call transfer }
+allow audioserver secaudiohalaidl binder { call transfer }
+allow secaudiohalaidl audioserver binder { call transfer }
+allow audioserver hal_audio_samsung binder { call transfer }
+allow hal_audio_samsung audioserver binder { call transfer }
+allow audioserver hal_audio_oplus binder { call transfer }
+allow hal_audio_oplus audioserver binder { call transfer }
+allow audioserver oplus_hal_audio binder { call transfer }
+allow oplus_hal_audio audioserver binder { call transfer }
+allow audioserver vivo_hal_audio binder { call transfer }
+allow vivo_hal_audio audioserver binder { call transfer }
+allow audioserver hal_audio_vivo binder { call transfer }
+allow hal_audio_vivo audioserver binder { call transfer }
+allow audioserver vendor_hal_audio_default binder { call transfer }
+allow vendor_hal_audio_default audioserver binder { call transfer }
 
-# ViPER4Android user-space app Binder IPC
+# ── 3. ViPER4Android App Binder IPC ──────────────────────────────────────────
 allow appdomain hal_audio_default binder { call transfer }
 allow hal_audio_default appdomain binder { call transfer }
 allow appdomain mtk_hal_audio binder { call transfer }
 allow mtk_hal_audio appdomain binder { call transfer }
+allow appdomain secaudiohalaidl binder { call transfer }
+allow secaudiohalaidl appdomain binder { call transfer }
+allow appdomain hal_audio_samsung binder { call transfer }
+allow hal_audio_samsung appdomain binder { call transfer }
+allow appdomain hal_audio_oplus binder { call transfer }
+allow hal_audio_oplus appdomain binder { call transfer }
+allow appdomain oplus_hal_audio binder { call transfer }
+allow oplus_hal_audio appdomain binder { call transfer }
+allow appdomain vivo_hal_audio binder { call transfer }
+allow vivo_hal_audio appdomain binder { call transfer }
+allow appdomain hal_audio_vivo binder { call transfer }
+allow hal_audio_vivo appdomain binder { call transfer }
+allow appdomain vendor_hal_audio_default binder { call transfer }
+allow vendor_hal_audio_default appdomain binder { call transfer }
+
 allow untrusted_app hal_audio_service service_manager { find }
 allow untrusted_app_all hal_audio_service service_manager { find }
 allow untrusted_app_all audioserver binder { call transfer }
 
-# Allow Audio HAL, audioserver, and apps to access SHM channel in /data/local/tmp/v4a
+# ── 4. Shared Memory Channel (/data/local/tmp/v4a) ───────────────────────────
 allow hal_audio_default shell_data_file dir { search read open getattr write add_name remove_name rename }
 allow hal_audio_default shell_data_file file { read write create open getattr setattr unlink rename map }
 allow mtk_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
 allow mtk_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow secaudiohalaidl shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow secaudiohalaidl shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_samsung shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_samsung shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_oplus shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_oplus shell_data_file file { read write create open getattr setattr unlink rename map }
+allow oplus_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow oplus_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow vivo_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow vivo_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_vivo shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_vivo shell_data_file file { read write create open getattr setattr unlink rename map }
+allow vendor_hal_audio_default shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow vendor_hal_audio_default shell_data_file file { read write create open getattr setattr unlink rename map }
+
 allow hal_audio_server shell_data_file dir { search read open getattr write add_name remove_name rename }
 allow hal_audio_server shell_data_file file { read write create open getattr setattr unlink rename map }
 allow audioserver shell_data_file dir { search read open getattr write add_name remove_name rename }
 allow audioserver shell_data_file file { read write create open getattr setattr unlink rename map }
+
 allow untrusted_app shell_data_file dir { search read open getattr }
 allow untrusted_app shell_data_file file { read write open getattr map }
 allow untrusted_app_all shell_data_file dir { search read open getattr }

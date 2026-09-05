@@ -35,10 +35,25 @@ chcon u:object_r:shell_data_file:s0 "$SHM_STATUS" "$SHM_PARAMS" "$SHM_BULK" 2>/d
 log "SHM channel initialized in $SHM_DIR"
 
 # ── 2. Early Property Tweaks ────────────────────────────────────────────────
-if command -v resetprop >/dev/null 2>&1; then
-  resetprop -n ro.audio.ignore_effects false 2>/dev/null
-  log "Early resetprop ro.audio.ignore_effects false applied"
-fi
+set_prop_safe() {
+  local prop="$1"
+  local val="$2"
+  if command -v resetprop >/dev/null 2>&1; then
+    resetprop -n "$prop" "$val" 2>/dev/null
+  elif [ -x /data/adb/magisk/resetprop ]; then
+    /data/adb/magisk/resetprop -n "$prop" "$val" 2>/dev/null
+  elif [ -x /data/adb/ksu/bin/resetprop ]; then
+    /data/adb/ksu/bin/resetprop -n "$prop" "$val" 2>/dev/null
+  elif [ -x /data/adb/ap/bin/resetprop ]; then
+    /data/adb/ap/bin/resetprop -n "$prop" "$val" 2>/dev/null
+  else
+    setprop "$prop" "$val" 2>/dev/null
+  fi
+}
+
+set_prop_safe ro.audio.ignore_effects false
+set_prop_safe ro.vendor.audio.ignore_effects false
+log "Early effect inhibition properties reset to false"
 
 # ── 3. Live SELinux Policy Injection ─────────────────────────────────────────
 V4A_POLICY="
@@ -46,6 +61,20 @@ allow hal_audio_default shell_data_file dir { search read open getattr write add
 allow hal_audio_default shell_data_file file { read write create open getattr setattr unlink rename map }
 allow mtk_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
 allow mtk_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow secaudiohalaidl shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow secaudiohalaidl shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_samsung shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_samsung shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_oplus shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_oplus shell_data_file file { read write create open getattr setattr unlink rename map }
+allow oplus_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow oplus_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow vivo_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow vivo_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_vivo shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_vivo shell_data_file file { read write create open getattr setattr unlink rename map }
+allow vendor_hal_audio_default shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow vendor_hal_audio_default shell_data_file file { read write create open getattr setattr unlink rename map }
 allow hal_audio_server shell_data_file dir { search read open getattr write add_name remove_name rename }
 allow hal_audio_server shell_data_file file { read write create open getattr setattr unlink rename map }
 allow audioserver shell_data_file dir { search read open getattr write add_name remove_name rename }
@@ -58,9 +87,23 @@ allow appdomain shell_data_file dir { search read open getattr }
 allow appdomain shell_data_file file { read write open getattr map }
 allow hal_audio_default vendor_file file { read getattr open execute execute_no_trans map }
 allow mtk_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
+allow secaudiohalaidl vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_samsung vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_oplus vendor_file file { read getattr open execute execute_no_trans map }
+allow oplus_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
+allow vivo_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
+allow hal_audio_vivo vendor_file file { read getattr open execute execute_no_trans map }
+allow vendor_hal_audio_default vendor_file file { read getattr open execute execute_no_trans map }
 allow audioserver vendor_file file { read getattr open execute execute_no_trans map }
 allow hal_audio_default hal_audio_default process { execmem }
 allow mtk_hal_audio mtk_hal_audio process { execmem }
+allow secaudiohalaidl secaudiohalaidl process { execmem }
+allow hal_audio_samsung hal_audio_samsung process { execmem }
+allow hal_audio_oplus hal_audio_oplus process { execmem }
+allow oplus_hal_audio oplus_hal_audio process { execmem }
+allow vivo_hal_audio vivo_hal_audio process { execmem }
+allow hal_audio_vivo hal_audio_vivo process { execmem }
+allow vendor_hal_audio_default vendor_hal_audio_default process { execmem }
 allow audioserver self:process { execmem }
 "
 
@@ -87,14 +130,20 @@ if [ -n "$POLICY_TOOL" ]; then
   RULE_FILE="$MODDIR/v4a_sepolicy.tmp"
   case "$POLICY_TYPE" in
     ksu)
-      echo "$V4A_POLICY" > "$RULE_FILE"
-      $POLICY_TOOL sepolicy apply "$RULE_FILE" >/dev/null 2>&1
+      echo "$V4A_POLICY" | while read -r line; do
+        [ -z "$line" ] && continue
+        echo "$line" > "$RULE_FILE"
+        $POLICY_TOOL sepolicy apply "$RULE_FILE" >/dev/null 2>&1
+      done
       rm -f "$RULE_FILE"
       log "SELinux live policy applied via ksud"
       ;;
     apatch)
-      echo "$V4A_POLICY" > "$RULE_FILE"
-      $POLICY_TOOL sepolicy --live --apply "$RULE_FILE" >/dev/null 2>&1
+      echo "$V4A_POLICY" | while read -r line; do
+        [ -z "$line" ] && continue
+        echo "$line" > "$RULE_FILE"
+        $POLICY_TOOL sepolicy --live --apply "$RULE_FILE" >/dev/null 2>&1
+      done
       rm -f "$RULE_FILE"
       log "SELinux live policy applied via apd"
       ;;
@@ -110,18 +159,21 @@ else
   log "Notice: No dynamic policy tool found; relying on sepolicy.rule static rules"
 fi
 
-# ── 4. ODM Bind-Mount Fallback ───────────────────────────────────────────────
-for odm_cand in "$MODDIR/system/odm/etc" "$MODDIR/odm/etc"; do
-  [ -d "$odm_cand" ] || continue
-  for cfg in "$odm_cand"/audio_effects* "$odm_cand"/audio/sku_*/audio_effects*; do
-    [ -f "$cfg" ] || continue
-    rel="${cfg#$odm_cand/}"
-    live_target="/odm/etc/$rel"
-    [ -f "$live_target" ] || continue
-    if ! grep -q " $live_target " /proc/mounts 2>/dev/null; then
-      mount -o bind "$cfg" "$live_target" 2>/dev/null && \
-        log "ODM bind-mount fallback succeeded: $live_target"
-    fi
+# ── 4. OEM Partition Bind-Mount Fallback ──────────────────────────────────────
+# On devices where Magisk/KSU/APatch overlay fails to automatically mount OEM partitions
+# (e.g. ColorOS /my_product, Vivo /vivo_product, ODM), apply early bind-mounts.
+for part in odm my_product my_stock my_engineering my_preload vivo_product; do
+  for cand_dir in "$MODDIR/system/$part/etc" "$MODDIR/$part/etc"; do
+    [ -d "$cand_dir" ] || continue
+    find "$cand_dir" -type f \( -name "audio_effects*.xml" -o -name "*audio_effects_config*.xml" \) 2>/dev/null | while read -r cfg; do
+      rel="${cfg#$cand_dir/}"
+      live_target="/$part/etc/$rel"
+      [ -f "$live_target" ] || continue
+      if ! grep -q " $live_target " /proc/mounts 2>/dev/null; then
+        mount -o bind "$cfg" "$live_target" 2>/dev/null && \
+          log "$part bind-mount fallback succeeded: $live_target"
+      fi
+    done
   done
 done
 

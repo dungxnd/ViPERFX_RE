@@ -43,18 +43,50 @@ fi
 ui_print "- Extracting module files..."
 unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODPATH" >&2
 
-# ── HAL Type Detection: Symmetric AIDL vs Legacy (HIDL) Probing ─────────────
-ui_print "- Detecting audio HAL type..."
+# ── HAL Type Detection: AOSP-Aligned Symmetric AIDL vs HIDL Probing ─────────
+ui_print "- Detecting audio HAL architecture..."
+log "Starting HAL architecture detection..."
 
-vintf_hal_format() {
-  local name="$1" fmt="$2"
+# Tier 0: Check manual overrides & hard OS boundaries
+OVERRIDE_MODE=""
+if [ -f /data/local/tmp/v4a_force_aidl ]; then
+  OVERRIDE_MODE="aidl"
+  ui_print "    [OVERRIDE] /data/local/tmp/v4a_force_aidl detected -> Forcing AIDL"
+  log "Manual override: force AIDL"
+elif [ -f /data/local/tmp/v4a_force_legacy ]; then
+  OVERRIDE_MODE="legacy"
+  ui_print "    [OVERRIDE] /data/local/tmp/v4a_force_legacy detected -> Forcing Legacy"
+  log "Manual override: force Legacy"
+fi
+
+if [ "$API" -le 32 ]; then
+  ui_print "    Android $API (<= 32) lacks AIDL audio HAL support -> Using Legacy"
+  log "API $API <= 32: AIDL non-existent on this Android release; enforcing Legacy"
+  USE_AIDL=false
+  OVERRIDE_MODE="legacy"
+fi
+
+AIDL_SCORE=0
+HIDL_SCORE=0
+
+# Helper: Scans VINTF manifests across vendor, odm, and apex directories
+# Mimics AOSP FactoryHal.cpp hasAidlHalService() -> AServiceManager_isDeclared()
+vintf_manifest_hal_format() {
+  local hal_name="$1" fmt="$2"
   local files
-  files="$(grep -rl "$name" /vendor/etc/vintf/ /vendor/manifest.xml /odm/etc/vintf/ 2>/dev/null)"
+  files="$(grep -rl "$hal_name" /vendor/etc/vintf/ /vendor/manifest.xml \
+           /odm/etc/vintf/ /odm/manifest.xml /apex/*/etc/vintf/ \
+           /my_product/etc/vintf/ /vivo_product/etc/vintf/ \
+           /system/etc/vintf/manifest.xml 2>/dev/null)"
   [ -z "$files" ] && return 1
   for f in $files; do
-    if awk -v name="$name" -v fmt="$fmt" '
+    # Skip framework compatibility matrices (they declare framework acceptance, not vendor provision)
+    case "$f" in
+      *compatibility_matrix*) continue ;;
+    esac
+    if awk -v name="$hal_name" -v fmt="$fmt" '
       /<hal/{in_hal=1; has_fmt=0; has_name=0}
-      in_hal && $0 ~ ("format=\"" fmt "\""){has_fmt=1}
+      in_hal && $0 ~ ("format=[\\\"\\\x27]" fmt "[\\\"\\\x27]"){has_fmt=1}
       in_hal && $0 ~ name {has_name=1}
       in_hal && /<\/hal>/{
         if(has_fmt && has_name){found=1; exit 0}
@@ -68,104 +100,177 @@ vintf_hal_format() {
   return 1
 }
 
-AIDL_SCORE=0
-HIDL_SCORE=0
-
-# Check manual overrides first
-OVERRIDE_MODE=""
-if [ -f /data/local/tmp/v4a_force_aidl ]; then
-  OVERRIDE_MODE="aidl"
-  ui_print "    [OVERRIDE] /data/local/tmp/v4a_force_aidl detected -> Forcing AIDL"
-  log "Manual override: force AIDL"
-elif [ -f /data/local/tmp/v4a_force_legacy ]; then
-  OVERRIDE_MODE="legacy"
-  ui_print "    [OVERRIDE] /data/local/tmp/v4a_force_legacy detected -> Forcing Legacy"
-  log "Manual override: force Legacy"
+# ── Tier 1: Definitive Runtime Service Checks (AOSP FactoryHal alignment) ────
+# In AOSP FactoryHal.cpp, hasAidlHalService() checks AServiceManager_isDeclared()
+# for "android.hardware.audio.effect.IFactory/default" and "android.hardware.audio.core.IModule/default".
+if service check android.hardware.audio.effect.IFactory/default 2>/dev/null | grep -qi "found"; then
+  ui_print "    [AIDL T1] ServiceManager: android.hardware.audio.effect.IFactory/default confirmed (+20)"
+  AIDL_SCORE=$((AIDL_SCORE + 20))
+elif lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect\.IFactory"; then
+  ui_print "    [AIDL T1] lshal: AIDL IFactory vendor HAL confirmed (+20)"
+  AIDL_SCORE=$((AIDL_SCORE + 20))
 fi
 
-# AIDL Probes
-if lshal 2>/dev/null | grep -qF "android.hardware.audio.effect.IFactory"; then
-  ui_print "    [AIDL A1] lshal: AIDL IFactory vendor HAL confirmed"
+if service check android.hardware.audio.core.IModule/default 2>/dev/null | grep -qi "found"; then
+  ui_print "    [AIDL T1] ServiceManager: android.hardware.audio.core.IModule/default confirmed (+15)"
+  AIDL_SCORE=$((AIDL_SCORE + 15))
+elif lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.core\.IModule"; then
+  ui_print "    [AIDL T1] lshal: AIDL core IModule vendor HAL confirmed (+15)"
+  AIDL_SCORE=$((AIDL_SCORE + 15))
+fi
+
+# HIDL service checks in hwservicemanager
+if lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect@[0-9]+\.[0-9]+::IEffectsFactory"; then
+  ui_print "    [HIDL T1] lshal: HIDL IEffectsFactory vendor HAL confirmed (+20)"
+  HIDL_SCORE=$((HIDL_SCORE + 20))
+fi
+
+if lshal 2>/dev/null | grep -qE "android\.hardware\.audio@[0-9]+\.[0-9]+::IDevicesFactory"; then
+  ui_print "    [HIDL T1] lshal: HIDL IDevicesFactory vendor HAL confirmed (+15)"
+  HIDL_SCORE=$((HIDL_SCORE + 15))
+fi
+
+# ── Tier 2: VINTF Manifest Declarations ──────────────────────────────────────
+if vintf_manifest_hal_format "android.hardware.audio.effect" "aidl"; then
+  ui_print "    [AIDL T2] VINTF manifest: declares AIDL audio.effect HAL (+15)"
+  AIDL_SCORE=$((AIDL_SCORE + 15))
+fi
+
+if vintf_manifest_hal_format "android.hardware.audio.core" "aidl"; then
+  ui_print "    [AIDL T2] VINTF manifest: declares AIDL audio.core HAL (+10)"
   AIDL_SCORE=$((AIDL_SCORE + 10))
 fi
 
+if vintf_manifest_hal_format "android.hardware.audio.effect" "hidl"; then
+  ui_print "    [HIDL T2] VINTF manifest: declares HIDL audio.effect HAL (+15)"
+  HIDL_SCORE=$((HIDL_SCORE + 15))
+fi
+
+if vintf_manifest_hal_format "android.hardware.audio" "hidl"; then
+  ui_print "    [HIDL T2] VINTF manifest: declares HIDL audio HAL (+10)"
+  HIDL_SCORE=$((HIDL_SCORE + 10))
+fi
+
+# ── Tier 3: Active HAL Daemons and Service Properties ────────────────────────
+AIDL_SVC_RUNNING=false
+for prop in \
+  init.svc.vendor.audio-hal-aidl \
+  init.svc.vendor.audio-effect-hal-aidl \
+  init.svc.audio-hal-aidl \
+  init.svc.secaudiohalaidl \
+  init.svc.audio.service-aidl.mediatek \
+  init.svc.vendor.qti.hardware.audio.service-aidl \
+  init.svc.vendor.oplus.hardware.audio.service \
+  init.svc.vendor.vivo.hardware.audio.service \
+  init.svc.vendor.mediatek.hardware.audio.service; do
+  if [ "$(getprop "$prop" 2>/dev/null)" = "running" ]; then
+    AIDL_SVC_RUNNING=true
+    break
+  fi
+done
+
+if $AIDL_SVC_RUNNING; then
+  ui_print "    [AIDL T3] Running AIDL audio HAL init service detected (+10)"
+  AIDL_SCORE=$((AIDL_SCORE + 10))
+elif [ "$API" -ge 33 ] && ps -A 2>/dev/null | grep -iE '([Aa]udio.*[Aa]idl|[Aa]idl.*[Aa]udio|secaudiohalaidl|audio\.service-aidl|oplus\.hardware\.audio|vivo\.hardware\.audio)'; then
+  ui_print "    [AIDL T3] Running AIDL audio daemon process found in ps (+8)"
+  AIDL_SCORE=$((AIDL_SCORE + 8))
+fi
+
+HIDL_SVC_RUNNING=false
+for prop in \
+  init.svc.vendor.audio-hal-2-0 \
+  init.svc.vendor.audio-hal-4-0 \
+  init.svc.vendor.audio-hal-5-0 \
+  init.svc.vendor.audio-hal-6-0 \
+  init.svc.vendor.audio-hal-7-0 \
+  init.svc.vendor.audio-hal-7-1; do
+  if [ "$(getprop "$prop" 2>/dev/null)" = "running" ]; then
+    HIDL_SVC_RUNNING=true
+    break
+  fi
+done
+
+if $HIDL_SVC_RUNNING; then
+  ui_print "    [HIDL T3] Running HIDL audio HAL init service detected (+10)"
+  HIDL_SCORE=$((HIDL_SCORE + 10))
+elif ps -A 2>/dev/null | grep -qE 'android\.hardware\.audio@[0-9]\.[0-9]-service'; then
+  ui_print "    [HIDL T3] Running HIDL audio daemon process found in ps (+8)"
+  HIDL_SCORE=$((HIDL_SCORE + 8))
+fi
+
+# ── Tier 4: Hardware Binaries and Library Artifacts ──────────────────────────
 if ls /vendor/bin/hw/*audio*aidl* 1>/dev/null 2>&1 || \
    ls /vendor/bin/hw/*audio*mediatek* 1>/dev/null 2>&1 || \
    ls /vendor/bin/hw/secaudiohalaidl 1>/dev/null 2>&1 || \
-   ls /apex/com.android.hardware.audio/bin/hw/*audio* 1>/dev/null 2>&1; then
-  ui_print "    [AIDL A2] AIDL HAL binary found in vendor or APEX"
-  AIDL_SCORE=$((AIDL_SCORE + 5))
+   ls /vendor/bin/hw/*oplus*audio* 1>/dev/null 2>&1 || \
+   ls /vendor/bin/hw/*vivo*audio* 1>/dev/null 2>&1 || \
+   ls /apex/com.android.hardware.audio/bin/hw/* 1>/dev/null 2>&1 || \
+   ls /apex/com.android.hardware.audio.effect/bin/hw/* 1>/dev/null 2>&1; then
+  ui_print "    [AIDL T4] AIDL HAL binary found in /vendor/bin/hw/ or APEX (+6)"
+  AIDL_SCORE=$((AIDL_SCORE + 6))
 fi
 
-if vintf_hal_format "android.hardware.audio.effect" "aidl"; then
-  ui_print "    [AIDL A3] Vendor VINTF declares AIDL audio effect HAL"
-  AIDL_SCORE=$((AIDL_SCORE + 5))
-fi
-
-if [ -f "/vendor/etc/audio_effects_config.xml" ] && \
-   ! [ -f "/vendor/etc/audio_effects.conf" ] && \
-   ! [ -f "/vendor/etc/audio_effects.xml" ]; then
-  ui_print "    [AIDL A4] Standalone audio_effects_config.xml found"
-  AIDL_SCORE=$((AIDL_SCORE + 3))
-fi
-
-if [ "$(getprop init.svc.vendor.audio-hal-aidl 2>/dev/null)" = "running" ] || \
-   [ "$(getprop init.svc.vendor.audio-effect-hal-aidl 2>/dev/null)" = "running" ] || \
-   [ "$(getprop init.svc.audio-hal-aidl 2>/dev/null)" = "running" ]; then
-  ui_print "    [AIDL A5] AIDL HAL service property running"
-  AIDL_SCORE=$((AIDL_SCORE + 4))
-elif [ "$API" -ge 33 ] && ps -A 2>/dev/null | grep -qE '([Aa]udio.*[Aa]idl|[Aa]idl.*[Aa]udio|secaudiohalaidl)'; then
-  ui_print "    [AIDL A5] AIDL audio daemon process found in ps"
-  AIDL_SCORE=$((AIDL_SCORE + 3))
-fi
-
-# HIDL Probes
-if lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect@[0-9]+\.[0-9]+::IEffectsFactory"; then
-  ui_print "    [HIDL H1] lshal: HIDL IEffectsFactory vendor HAL confirmed"
-  HIDL_SCORE=$((HIDL_SCORE + 10))
+if ls /vendor/bin/hw/android.hardware.audio@*-service 1>/dev/null 2>&1; then
+  ui_print "    [HIDL T4] HIDL HAL binary found in /vendor/bin/hw/ (+6)"
+  HIDL_SCORE=$((HIDL_SCORE + 6))
 fi
 
 if ls /vendor/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1 || \
    ls /system/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1; then
-  ui_print "    [HIDL H2] libeffectproxy.so found (HIDL effects proxy)"
-  HIDL_SCORE=$((HIDL_SCORE + 4))
+  ui_print "    [HIDL T4] libeffectproxy.so found (exclusive to HIDL pipeline) (+6)"
+  HIDL_SCORE=$((HIDL_SCORE + 6))
+fi
+
+# ── Tier 5: Audio Effect Configuration Signature ─────────────────────────────
+if [ -f "/vendor/etc/audio_effects_config.xml" ] || [ -f "/system/etc/audio_effects_config.xml" ]; then
+  if ! [ -f "/vendor/etc/audio_effects.conf" ] && ! [ -f "/system/etc/audio_effects.conf" ]; then
+    ui_print "    [AIDL T5] Pure audio_effects_config.xml structure found (+4)"
+    AIDL_SCORE=$((AIDL_SCORE + 4))
+  fi
 fi
 
 if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
-   ls /vendor/etc/audio_effects.xml 1>/dev/null 2>&1; then
-  ui_print "    [HIDL H3] Legacy audio_effects config found"
-  HIDL_SCORE=$((HIDL_SCORE + 3))
+   ls /system/etc/audio_effects.conf 1>/dev/null 2>&1 || \
+   ls /odm/etc/audio_effects.conf 1>/dev/null 2>&1; then
+  ui_print "    [HIDL T5] Legacy audio_effects.conf found (+6)"
+  HIDL_SCORE=$((HIDL_SCORE + 6))
 fi
 
-if vintf_hal_format "android.hardware.audio.effect" "hidl"; then
-  ui_print "    [HIDL H4] Vendor VINTF declares HIDL audio effect HAL"
-  HIDL_SCORE=$((HIDL_SCORE + 4))
+# ── Tier 6: Android OS Prior (AOSP Version Baseline) ─────────────────────────
+# Android 15 (API 35+) deprecated and removed HIDL audio HAL support.
+if [ "$API" -ge 35 ]; then
+  ui_print "    [PRIOR] Android 15+ (API $API) mandates AIDL audio HAL (+12)"
+  AIDL_SCORE=$((AIDL_SCORE + 12))
+elif [ "$API" -eq 34 ]; then
+  ui_print "    [PRIOR] Android 14 (API 34) defaults to AIDL audio HAL (+4)"
+  AIDL_SCORE=$((AIDL_SCORE + 4))
 fi
 
-if [ "$HIDL_SCORE" -eq 0 ] && lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect@[0-9]"; then
-  ui_print "    [HIDL H5] lshal: HIDL audio effect entry found"
-  HIDL_SCORE=$((HIDL_SCORE + 2))
-fi
+ui_print "    Calculated Scores: AIDL=$AIDL_SCORE | HIDL=$HIDL_SCORE (API $API)"
+log "Final HAL Scores: AIDL=$AIDL_SCORE, HIDL=$HIDL_SCORE, API=$API, Override=$OVERRIDE_MODE"
 
-ui_print "    Detection scores: AIDL=$AIDL_SCORE, HIDL=$HIDL_SCORE (API $API)"
-log "Scores: AIDL=$AIDL_SCORE, HIDL=$HIDL_SCORE, API=$API"
-
-USE_AIDL=false
+# ── Final Resolution Aligned with AOSP FactoryHal Priority ───────────────────
+# In AOSP FactoryHal.cpp, sAudioHALVersions prioritizes AIDL over HIDL.
 if [ -n "$OVERRIDE_MODE" ]; then
   [ "$OVERRIDE_MODE" = "aidl" ] && USE_AIDL=true || USE_AIDL=false
+  ui_print "    -> Decision: Enforced by manual override ($OVERRIDE_MODE)"
 elif [ "$AIDL_SCORE" -gt 0 ] && [ "$AIDL_SCORE" -ge "$HIDL_SCORE" ]; then
   USE_AIDL=true
-elif [ "$API" -ge 35 ] && [ "$HIDL_SCORE" -eq 0 ]; then
-  ui_print "    Android 15+ (API $API) defaults to AIDL HAL"
+  ui_print "    -> Decision: AIDL audio HAL selected (score $AIDL_SCORE >= $HIDL_SCORE)"
+elif [ "$API" -ge 35 ] && [ "$HIDL_SCORE" -lt 20 ]; then
+  # On Android 15+, unless there is definitive proof of a running HIDL service (>= 20), AIDL is selected
   USE_AIDL=true
-elif [ "$HIDL_SCORE" -gt 0 ]; then
+  ui_print "    -> Decision: AIDL audio HAL selected (Android 15+ requirement)"
+elif [ "$HIDL_SCORE" -gt "$AIDL_SCORE" ]; then
   USE_AIDL=false
-elif [ "$API" -ge 35 ]; then
-  ui_print "    Android 15+ (API $API): preferring AIDL"
+  ui_print "    -> Decision: Legacy (HIDL) audio HAL selected (score $HIDL_SCORE > $AIDL_SCORE)"
+elif [ "$API" -ge 34 ]; then
   USE_AIDL=true
+  ui_print "    -> Decision: AIDL audio HAL selected (Android 14+ default)"
 else
-  ui_print "    ! No definitive HAL evidence found; defaulting to Legacy"
   USE_AIDL=false
+  ui_print "    -> Decision: Legacy (HIDL) audio HAL selected (safe fallback)"
 fi
 
 # ── Library Installation ───────────────────────────────────────────────────
@@ -221,7 +326,7 @@ patch_target_file() {
   local DEST=""
 
   case "$REL" in
-    vendor/*|odm/*|product/*|system_ext/*)
+    vendor/*|odm/*|product/*|system_ext/*|my_product/*|my_stock/*|my_engineering/*|my_preload/*|vivo_product/*)
       DEST="$MODPATH/system/$REL"
       ;;
     system/*)
@@ -289,29 +394,31 @@ patch_target_file() {
 PATCHED_COUNT=0
 CONFIG_XML_COUNT=0
 
-CONFIG_DIRS="/odm/etc /vendor/etc /system/etc /product/etc /system_ext/etc"
-for d in $CONFIG_DIRS; do
-  [ -d "$d" ] || continue
-  for cfg in "$d"/audio_effects*.xml "$d"/audio_effects*.conf; do
-    [ -f "$cfg" ] || continue
-    patch_target_file "$cfg"
-    PATCHED_COUNT=$((PATCHED_COUNT + 1))
-    case "$(basename "$cfg")" in
-      *audio_effects_config.xml) CONFIG_XML_COUNT=$((CONFIG_XML_COUNT + 1)) ;;
-    esac
+# Comprehensive OEM audio effects config discovery:
+# Recursively searches /odm/etc, /vendor/etc, /system/etc, /product/etc, /system_ext/etc,
+# /my_product/etc (ColorOS/OxygenOS), /my_stock/etc, /my_engineering/etc, /my_preload/etc,
+# /vivo_product/etc (Vivo/iQOO), and all subdirectories (/etc/audio/**, /etc/audio/sku_*).
+find_target_configs() {
+  for root_dir in \
+    /odm/etc /vendor/etc /system/etc /product/etc /system_ext/etc \
+    /my_product/etc /my_stock/etc /my_engineering/etc /my_preload/etc \
+    /vivo_product/etc; do
+    [ -d "$root_dir" ] || continue
+    find "$root_dir" -type f \( \
+      -name "audio_effects*.xml" -o \
+      -name "audio_effects*.conf" -o \
+      -name "*audio_effects_config*.xml" \
+    \) 2>/dev/null
   done
-done
+}
 
-for sku_dir in /vendor/etc/audio/sku_* /odm/etc/audio/sku_*; do
-  [ -d "$sku_dir" ] || continue
-  for cfg in "$sku_dir"/audio_effects*.xml "$sku_dir"/audio_effects*.conf; do
-    [ -f "$cfg" ] || continue
-    patch_target_file "$cfg"
-    PATCHED_COUNT=$((PATCHED_COUNT + 1))
-    case "$(basename "$cfg")" in
-      *audio_effects_config.xml) CONFIG_XML_COUNT=$((CONFIG_XML_COUNT + 1)) ;;
-    esac
-  done
+for cfg in $(find_target_configs); do
+  [ -f "$cfg" ] || continue
+  patch_target_file "$cfg"
+  PATCHED_COUNT=$((PATCHED_COUNT + 1))
+  case "$(basename "$cfg")" in
+    *audio_effects_config.xml) CONFIG_XML_COUNT=$((CONFIG_XML_COUNT + 1)) ;;
+  esac
 done
 
 # APEX configs (e.g. Pixel / com.android.hardware.audio.effect)
@@ -358,8 +465,8 @@ fi
 
 log "Total configs patched: $PATCHED_COUNT (audio_effects_config.xml: $CONFIG_XML_COUNT)"
 
-# Partition symlinks for KernelSU / APatch compatibility
-for part in vendor odm product system_ext; do
+# Partition symlinks for KernelSU / APatch compatibility across AOSP and OEM ROMs
+for part in vendor odm product system_ext my_product my_stock my_engineering my_preload vivo_product; do
   if [ -d "$MODPATH/system/$part" ] && [ ! -e "$MODPATH/$part" ]; then
     ln -s "system/$part" "$MODPATH/$part" 2>/dev/null
     log "Created partition symlink: $MODPATH/$part -> system/$part"
