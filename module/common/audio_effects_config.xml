@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<audio_effects_conf version="2.0" xmlns="http://schemas.android.com/audio/audio_effects_conf/v2_0">
+
+    <libraries>
+        <library name="v4a_aidl" path="libv4a_aidl.so"/>
+    </libraries>
+
+    <effects>
+        <effect name="v4a_standard_aidl" library="v4a_aidl" uuid="90380da3-8536-4744-a6a3-5731970e640f" type="7261676f-6d75-7369-6364-28e2fd3ac39e"/>
+    </effects>
+
+</audio_effects_conf>

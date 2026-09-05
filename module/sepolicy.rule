@@ -1,46 +1,55 @@
 # ViPER4Android-RE SELinux policy rules
 # Required for Android 13–16 enforcing mode
-# Supported by Magisk, KernelSU, and APatch out-of-the-box.
+# Supported by Magisk, KernelSU, KernelSU Next, and APatch out-of-the-box.
 
 # Allow Audio HAL to read/execute soundfx libraries in vendor partition
 allow hal_audio_default vendor_file file { read getattr open execute execute_no_trans map }
 allow hal_audio_default same_process_hal_file file { read getattr open execute execute_no_trans map }
-
-# Allow hal_audio_default to allocate executable memory (JIT / effect DSP)
 allow hal_audio_default hal_audio_default process { execmem }
 
 # Shared memory / Fast Message Queue (FMQ) support
 allow hal_audio_default ashmem_device chr_file { read write open ioctl }
 allow hal_audio_default ashmem_libcutils_device chr_file { read write open ioctl }
 
-# Audioserver: same library loading rights
+# MediaTek Audio HAL support
+allow mtk_hal_audio vendor_file file { read getattr open execute execute_no_trans map }
+allow mtk_hal_audio same_process_hal_file file { read getattr open execute execute_no_trans map }
+allow mtk_hal_audio mtk_hal_audio process { execmem }
+allow mtk_hal_audio ashmem_device chr_file { read write open ioctl }
+allow mtk_hal_audio ashmem_libcutils_device chr_file { read write open ioctl }
+
+# Audioserver: vendor library execution & JIT
 allow audioserver vendor_file file { read getattr open execute execute_no_trans map }
 allow audioserver same_process_hal_file file { read getattr open execute execute_no_trans map }
-# audioserver needs execmem for JIT/DSP effect loading.
-# Correct form: self:process — NOT hal_audio_default:process (that is a
-# cross-domain process rule with no practical effect and may be rejected).
-# Confirmed by AOSP platform/system/sepolicy: allow audioserver self:process execmem
 allow audioserver self:process { execmem }
 
-# Binder IPC between audioserver and hal_audio_default (AIDL HAL path)
+# Binder IPC between audioserver and HAL
 allow audioserver hal_audio_default binder { call transfer }
 allow hal_audio_default audioserver binder { call transfer }
+allow audioserver mtk_hal_audio binder { call transfer }
+allow mtk_hal_audio audioserver binder { call transfer }
 
 # ViPER4Android user-space app Binder IPC
 allow appdomain hal_audio_default binder { call transfer }
 allow hal_audio_default appdomain binder { call transfer }
+allow appdomain mtk_hal_audio binder { call transfer }
+allow mtk_hal_audio appdomain binder { call transfer }
 allow untrusted_app hal_audio_service service_manager { find }
 allow untrusted_app_all hal_audio_service service_manager { find }
 allow untrusted_app_all audioserver binder { call transfer }
 
-# Allow Audio HAL and audioserver to access SHM files in /data/local/tmp/v4a
-# (shell_data_file context — set by service.sh and ConfigChannel.kt via chcon).
-# Without these rules, SELinux Enforcing blocks the HAL from mapping the SHM
-# files that carry ViPERParams / status data, silently breaking parameter
-# delivery and driver-status reporting.
-allow hal_audio_default shell_data_file dir { search read open getattr write add_name }
-allow hal_audio_default shell_data_file file { read write open getattr map create }
-allow hal_audio_server  shell_data_file dir { search read open getattr write add_name }
-allow hal_audio_server  shell_data_file file { read write open getattr map create }
-allow audioserver       shell_data_file dir { search read open getattr write add_name }
-allow audioserver       shell_data_file file { read write open getattr map create }
+# Allow Audio HAL, audioserver, and apps to access SHM channel in /data/local/tmp/v4a
+allow hal_audio_default shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_default shell_data_file file { read write create open getattr setattr unlink rename map }
+allow mtk_hal_audio shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow mtk_hal_audio shell_data_file file { read write create open getattr setattr unlink rename map }
+allow hal_audio_server shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow hal_audio_server shell_data_file file { read write create open getattr setattr unlink rename map }
+allow audioserver shell_data_file dir { search read open getattr write add_name remove_name rename }
+allow audioserver shell_data_file file { read write create open getattr setattr unlink rename map }
+allow untrusted_app shell_data_file dir { search read open getattr }
+allow untrusted_app shell_data_file file { read write open getattr map }
+allow untrusted_app_all shell_data_file dir { search read open getattr }
+allow untrusted_app_all shell_data_file file { read write open getattr map }
+allow appdomain shell_data_file dir { search read open getattr }
+allow appdomain shell_data_file file { read write open getattr map }
