@@ -25,12 +25,10 @@ static std::vector<std::byte> make_set_payload(int32_t param, Vals... vals) {
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
     std::vector buf(total, std::byte{0});
-    // Use std::memcpy-based construction to avoid aliasing UB with raw byte buffers.
-    effect_param_t header{};
-    header.status = 0;
-    header.psize  = psize;
-    header.vsize  = vsize;
-    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
+    auto* header = reinterpret_cast<effect_param_t*>(buf.data());
+    header->status = 0;
+    header->psize  = psize;
+    header->vsize  = vsize;
     std::memcpy(buf.data() + sizeof(effect_param_t), &param, sizeof(int32_t));
 
     // Write values after Align4(psize) offset
@@ -55,10 +53,10 @@ static std::vector<std::byte> make_get_payload(int32_t query) {
     const size_t total = sizeof(effect_param_t) + aligned_psize;
 
     std::vector buf(total, std::byte{0});
-    effect_param_t header{};
-    header.psize = psize;
-    header.vsize = sizeof(int32_t); // expected reply vsize
-    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
+    auto* header = reinterpret_cast<effect_param_t*>(buf.data());
+    header->status = 0;
+    header->psize = psize;
+    header->vsize = sizeof(int32_t); // expected reply vsize
     std::memcpy(buf.data() + sizeof(effect_param_t), &query, sizeof(int32_t));
     return buf;
 }
@@ -147,10 +145,10 @@ TEST(ParameterRouter_HandleSet, UnknownValueSize_ReturnsEINVAL) {
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
     std::vector buf(total, std::byte{0});
-    effect_param_t header{};
-    header.psize = psize;
-    header.vsize = vsize;
-    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
+    auto* header = reinterpret_cast<effect_param_t*>(buf.data());
+    header->status = 0;
+    header->psize = psize;
+    header->vsize = vsize;
     int32_t param = 1;
     std::memcpy(buf.data() + sizeof(effect_param_t), &param, sizeof(int32_t));
 
@@ -173,10 +171,10 @@ static std::vector<std::byte> make_blob_payload(uint32_t vsize, uint32_t arr_siz
     const size_t total = sizeof(effect_param_t) + aligned_psize + vsize;
 
     std::vector buf(total, std::byte{0});
-    effect_param_t header{};
-    header.psize = psize;
-    header.vsize = vsize;
-    std::memcpy(buf.data(), &header, sizeof(effect_param_t));
+    auto* header = reinterpret_cast<effect_param_t*>(buf.data());
+    header->status = 0;
+    header->psize = psize;
+    header->vsize = vsize;
     int32_t param = 200;  // any param id that maps to blob dispatch
     std::memcpy(buf.data() + sizeof(effect_param_t), &param, sizeof(int32_t));
     // Write the arr_size claim as the first uint32_t of the value region

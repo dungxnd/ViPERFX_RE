@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.30)
 project(ViPERFX_RE_Tests C CXX)
 
-set(CMAKE_CXX_STANDARD 26)
+if (MSVC)
+    set(CMAKE_CXX_STANDARD 23)
+else ()
+    set(CMAKE_CXX_STANDARD 26)
+endif ()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -12,7 +16,11 @@ enable_testing()
 # Host build: suppress Android-only flags / definitions
 # ---------------------------------------------------------------------------
 # Remove any -fno-exceptions / -fno-rtti inherited from parent (GTest needs them)
-add_compile_options(-Wall -Wno-unused-parameter)
+if (MSVC)
+    add_compile_options(/W3)
+else ()
+    add_compile_options(-Wall -Wno-unused-parameter)
+endif ()
 
 # VERSION_CODE and VERSION_NAME are defined by the top-level Android build.
 # Provide harmless defaults for the host test build so ParameterRouter.h compiles.
@@ -54,11 +62,15 @@ target_include_directories(ViPERDSP_host PUBLIC
     "${VIPERDSP_DIR}/include"
     "${VIPERDSP_DIR}"
 )
-target_compile_options(ViPERDSP_host PRIVATE
-    -O2
-    -Wno-sign-compare
-    -Wno-parentheses
-)
+if (MSVC)
+    target_compile_options(ViPERDSP_host PRIVATE /O2)
+else ()
+    target_compile_options(ViPERDSP_host PRIVATE
+        -O2
+        -Wno-sign-compare
+        -Wno-parentheses
+    )
+endif ()
 # Host: no Android log, no ARM-specific asm guards already handled in log.h
 # _USE_MATH_DEFINES: required on MSVC/MinGW to expose M_PI from <cmath>.
 target_compile_definitions(ViPERDSP_host PUBLIC HOST_BUILD=1 _USE_MATH_DEFINES)

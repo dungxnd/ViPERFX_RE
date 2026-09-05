@@ -1,7 +1,7 @@
 id=ViPER4Android-RE
 name=ViPER4Android Driver
-version=3.8.1
-versionCode=20260901
+version=3.9.0
+versionCode=20260902
 author=pittvandewitt, MrWhite214, Zackptg5, Martmists, Iscle, llsl, DungxND
 description=ViPER4Android is an audio enhancing software to provide everyone with a better audio experience.
 updateJson=https://github.com/dungxnd/ViPERFX_RE/releases/latest/download/update.json
