@@ -77,7 +77,8 @@ vintf_manifest_hal_format() {
   files="$(grep -rl "$hal_name" /vendor/etc/vintf/ /vendor/manifest.xml \
            /odm/etc/vintf/ /odm/manifest.xml /apex/*/etc/vintf/ \
            /my_product/etc/vintf/ /vivo_product/etc/vintf/ \
-           /system/etc/vintf/manifest.xml 2>/dev/null)"
+           /system_ext/etc/vintf/ /product/etc/vintf/ \
+           /system/etc/vintf/ /system/manifest.xml 2>/dev/null)"
   [ -z "$files" ] && return 1
   for f in $files; do
     # Skip framework compatibility matrices (they declare framework acceptance, not vendor provision)
@@ -100,34 +101,50 @@ vintf_manifest_hal_format() {
   return 1
 }
 
+# Helper: Check if a Binder AIDL service is registered in servicemanager
+check_service_declared() {
+  local res
+  res="$(service check "$1" 2>/dev/null)"
+  [ -z "$res" ] && return 1
+  case "$res" in
+    *"not found"*) return 1 ;;
+    *": found"*|*"found"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── Tier 1: Definitive Runtime Service Checks (AOSP FactoryHal alignment) ────
 # In AOSP FactoryHal.cpp, hasAidlHalService() checks AServiceManager_isDeclared()
 # for "android.hardware.audio.effect.IFactory/default" and "android.hardware.audio.core.IModule/default".
-if service check android.hardware.audio.effect.IFactory/default 2>/dev/null | grep -qi "found"; then
+AIDL_EFFECT_SVC_CONFIRMED=false
+AIDL_CORE_SVC_CONFIRMED=false
+
+if check_service_declared "android.hardware.audio.effect.IFactory/default"; then
   ui_print "    [AIDL T1] ServiceManager: android.hardware.audio.effect.IFactory/default confirmed (+20)"
   AIDL_SCORE=$((AIDL_SCORE + 20))
-elif lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect\.IFactory"; then
-  ui_print "    [AIDL T1] lshal: AIDL IFactory vendor HAL confirmed (+20)"
-  AIDL_SCORE=$((AIDL_SCORE + 20))
+  AIDL_EFFECT_SVC_CONFIRMED=true
 fi
 
-if service check android.hardware.audio.core.IModule/default 2>/dev/null | grep -qi "found"; then
+if check_service_declared "android.hardware.audio.core.IModule/default"; then
   ui_print "    [AIDL T1] ServiceManager: android.hardware.audio.core.IModule/default confirmed (+15)"
   AIDL_SCORE=$((AIDL_SCORE + 15))
-elif lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.core\.IModule"; then
-  ui_print "    [AIDL T1] lshal: AIDL core IModule vendor HAL confirmed (+15)"
-  AIDL_SCORE=$((AIDL_SCORE + 15))
+  AIDL_CORE_SVC_CONFIRMED=true
 fi
 
 # HIDL service checks in hwservicemanager
+HIDL_EFFECT_SVC_CONFIRMED=false
+HIDL_CORE_SVC_CONFIRMED=false
+
 if lshal 2>/dev/null | grep -qE "android\.hardware\.audio\.effect@[0-9]+\.[0-9]+::IEffectsFactory"; then
   ui_print "    [HIDL T1] lshal: HIDL IEffectsFactory vendor HAL confirmed (+20)"
   HIDL_SCORE=$((HIDL_SCORE + 20))
+  HIDL_EFFECT_SVC_CONFIRMED=true
 fi
 
 if lshal 2>/dev/null | grep -qE "android\.hardware\.audio@[0-9]+\.[0-9]+::IDevicesFactory"; then
   ui_print "    [HIDL T1] lshal: HIDL IDevicesFactory vendor HAL confirmed (+15)"
   HIDL_SCORE=$((HIDL_SCORE + 15))
+  HIDL_CORE_SVC_CONFIRMED=true
 fi
 
 # ── Tier 2: VINTF Manifest Declarations ──────────────────────────────────────
@@ -160,8 +177,6 @@ for prop in \
   init.svc.secaudiohalaidl \
   init.svc.audio.service-aidl.mediatek \
   init.svc.vendor.qti.hardware.audio.service-aidl \
-  init.svc.vendor.oplus.hardware.audio.service \
-  init.svc.vendor.vivo.hardware.audio.service \
   init.svc.vendor.mediatek.hardware.audio.service; do
   if [ "$(getprop "$prop" 2>/dev/null)" = "running" ]; then
     AIDL_SVC_RUNNING=true
@@ -172,7 +187,7 @@ done
 if $AIDL_SVC_RUNNING; then
   ui_print "    [AIDL T3] Running AIDL audio HAL init service detected (+10)"
   AIDL_SCORE=$((AIDL_SCORE + 10))
-elif [ "$API" -ge 33 ] && ps -A 2>/dev/null | grep -iE '([Aa]udio.*[Aa]idl|[Aa]idl.*[Aa]udio|secaudiohalaidl|audio\.service-aidl|oplus\.hardware\.audio|vivo\.hardware\.audio)'; then
+elif [ "$API" -ge 33 ] && ps -A 2>/dev/null | grep -v grep | grep -qiE '([Aa]udio.*[Aa]idl|[Aa]idl.*[Aa]udio|secaudiohalaidl|audio\.service-aidl)'; then
   ui_print "    [AIDL T3] Running AIDL audio daemon process found in ps (+8)"
   AIDL_SCORE=$((AIDL_SCORE + 8))
 fi
@@ -194,7 +209,7 @@ done
 if $HIDL_SVC_RUNNING; then
   ui_print "    [HIDL T3] Running HIDL audio HAL init service detected (+10)"
   HIDL_SCORE=$((HIDL_SCORE + 10))
-elif ps -A 2>/dev/null | grep -qE 'android\.hardware\.audio@[0-9]\.[0-9]-service'; then
+elif ps -A 2>/dev/null | grep -v grep | grep -qE 'android\.hardware\.audio@[0-9]\.[0-9]-service'; then
   ui_print "    [HIDL T3] Running HIDL audio daemon process found in ps (+8)"
   HIDL_SCORE=$((HIDL_SCORE + 8))
 fi
@@ -203,8 +218,6 @@ fi
 if ls /vendor/bin/hw/*audio*aidl* 1>/dev/null 2>&1 || \
    ls /vendor/bin/hw/*audio*mediatek* 1>/dev/null 2>&1 || \
    ls /vendor/bin/hw/secaudiohalaidl 1>/dev/null 2>&1 || \
-   ls /vendor/bin/hw/*oplus*audio* 1>/dev/null 2>&1 || \
-   ls /vendor/bin/hw/*vivo*audio* 1>/dev/null 2>&1 || \
    ls /apex/com.android.hardware.audio/bin/hw/* 1>/dev/null 2>&1 || \
    ls /apex/com.android.hardware.audio.effect/bin/hw/* 1>/dev/null 2>&1; then
   ui_print "    [AIDL T4] AIDL HAL binary found in /vendor/bin/hw/ or APEX (+6)"
@@ -213,12 +226,6 @@ fi
 
 if ls /vendor/bin/hw/android.hardware.audio@*-service 1>/dev/null 2>&1; then
   ui_print "    [HIDL T4] HIDL HAL binary found in /vendor/bin/hw/ (+6)"
-  HIDL_SCORE=$((HIDL_SCORE + 6))
-fi
-
-if ls /vendor/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1 || \
-   ls /system/lib*/soundfx/libeffectproxy.so 1>/dev/null 2>&1; then
-  ui_print "    [HIDL T4] libeffectproxy.so found (exclusive to HIDL pipeline) (+6)"
   HIDL_SCORE=$((HIDL_SCORE + 6))
 fi
 
@@ -238,12 +245,15 @@ if ls /vendor/etc/audio_effects.conf 1>/dev/null 2>&1 || \
 fi
 
 # ── Tier 6: Android OS Prior (AOSP Version Baseline) ─────────────────────────
-# Android 15 (API 35+) deprecated and removed HIDL audio HAL support.
+# Android 15 (API 35+) deprecated and removed HIDL audio HAL support from CTS.
+# However, OEM ROMs (ColorOS, MIUI, etc.) may retain a legacy HIDL HAL stack.
+# We apply a modest prior (+8 for API 35+, +4 for API 34), but it cannot override
+# actual hardware signals.
 if [ "$API" -ge 35 ]; then
-  ui_print "    [PRIOR] Android 15+ (API $API) mandates AIDL audio HAL (+12)"
-  AIDL_SCORE=$((AIDL_SCORE + 12))
+  ui_print "    [PRIOR] Android 15+ (API $API) platform baseline (+8)"
+  AIDL_SCORE=$((AIDL_SCORE + 8))
 elif [ "$API" -eq 34 ]; then
-  ui_print "    [PRIOR] Android 14 (API 34) defaults to AIDL audio HAL (+4)"
+  ui_print "    [PRIOR] Android 14 (API 34) platform baseline (+4)"
   AIDL_SCORE=$((AIDL_SCORE + 4))
 fi
 
@@ -251,26 +261,42 @@ ui_print "    Calculated Scores: AIDL=$AIDL_SCORE | HIDL=$HIDL_SCORE (API $API)"
 log "Final HAL Scores: AIDL=$AIDL_SCORE, HIDL=$HIDL_SCORE, API=$API, Override=$OVERRIDE_MODE"
 
 # ── Final Resolution Aligned with AOSP FactoryHal Priority ───────────────────
-# In AOSP FactoryHal.cpp, sAudioHALVersions prioritizes AIDL over HIDL.
+# In AOSP FactoryHal.cpp, sAudioHALVersions prioritizes AIDL over HIDL:
+#   1) AIDL 1.0 (checks android.hardware.audio.effect.IFactory/default)
+#   2) HIDL 7.1
+#   3) HIDL 7.0
+#   4) HIDL 6.0
+# When an AIDL effect factory service is declared/registered in ServiceManager,
+# FactoryHal binds createEffectFactoryAidl().
+# When AIDL is not declared, FactoryHal FALLS BACK to HIDL (7.1, 7.0, 6.0).
 if [ -n "$OVERRIDE_MODE" ]; then
   [ "$OVERRIDE_MODE" = "aidl" ] && USE_AIDL=true || USE_AIDL=false
   ui_print "    -> Decision: Enforced by manual override ($OVERRIDE_MODE)"
-elif [ "$AIDL_SCORE" -gt 0 ] && [ "$AIDL_SCORE" -ge "$HIDL_SCORE" ]; then
+elif $AIDL_EFFECT_SVC_CONFIRMED && ! $HIDL_EFFECT_SVC_CONFIRMED; then
+  # Pure AIDL: AIDL service running, no HIDL effect service running
   USE_AIDL=true
-  ui_print "    -> Decision: AIDL audio HAL selected (score $AIDL_SCORE >= $HIDL_SCORE)"
-elif [ "$API" -ge 35 ] && [ "$HIDL_SCORE" -lt 20 ]; then
-  # On Android 15+, unless there is definitive proof of a running HIDL service (>= 20), AIDL is selected
+  ui_print "    -> Decision: AIDL audio HAL selected (Active AIDL IFactory in ServiceManager)"
+elif $AIDL_EFFECT_SVC_CONFIRMED && $HIDL_EFFECT_SVC_CONFIRMED; then
+  # Dual-stack: both reported in service managers. AOSP FactoryHal prioritizes AIDL.
   USE_AIDL=true
-  ui_print "    -> Decision: AIDL audio HAL selected (Android 15+ requirement)"
+  ui_print "    -> Decision: AIDL audio HAL selected (AOSP FactoryHal prioritizes AIDL in dual-stack)"
+elif $HIDL_EFFECT_SVC_CONFIRMED && ! $AIDL_EFFECT_SVC_CONFIRMED; then
+  # Definitive HIDL: HIDL service running in hwservicemanager, NO AIDL service in servicemanager!
+  USE_AIDL=false
+  ui_print "    -> Decision: Legacy (HIDL) audio HAL selected (Active HIDL IEffectsFactory)"
+  ui_print "       [AOSP FactoryHal] AIDL not declared; framework falls back to HIDL"
+elif [ "$AIDL_SCORE" -gt "$HIDL_SCORE" ]; then
+  USE_AIDL=true
+  ui_print "    -> Decision: AIDL audio HAL selected (score $AIDL_SCORE > $HIDL_SCORE)"
 elif [ "$HIDL_SCORE" -gt "$AIDL_SCORE" ]; then
   USE_AIDL=false
   ui_print "    -> Decision: Legacy (HIDL) audio HAL selected (score $HIDL_SCORE > $AIDL_SCORE)"
-elif [ "$API" -ge 34 ]; then
+elif [ "$API" -ge 35 ]; then
   USE_AIDL=true
-  ui_print "    -> Decision: AIDL audio HAL selected (Android 14+ default)"
+  ui_print "    -> Decision: AIDL audio HAL selected (Android 15+ default)"
 else
   USE_AIDL=false
-  ui_print "    -> Decision: Legacy (HIDL) audio HAL selected (safe fallback)"
+  ui_print "    -> Decision: Legacy (HIDL) audio HAL selected (fallback)"
 fi
 
 # ── Library Installation ───────────────────────────────────────────────────

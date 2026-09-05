@@ -33,22 +33,31 @@ ViPERFX_RE ships as a **single unified Magisk / KernelSU / APatch module** built
 
 ### How Auto-Detection Works
 
-During module installation, `customize.sh` executes an **AOSP-aligned 7-tier symmetric scoring engine** to evaluate whether the host device runs a modern AIDL audio HAL or a legacy HIDL/classic audio HAL stack:
+During module installation, `customize.sh` executes an **AOSP-aligned 7-tier detection engine** to evaluate whether the host device runs a modern AIDL audio HAL or a legacy HIDL/classic audio HAL stack:
 
 | Tier | Evaluation Target | Description | Score Weight |
 | :--- | :--- | :--- | :--- |
 | **Tier 0** | **Manual Overrides & Boundaries** | Forces mode via `/data/local/tmp/v4a_force_aidl` or `/data/local/tmp/v4a_force_legacy`. Android $\le 12$ (API $\le 32$) lacks AIDL audio HAL support and is strictly locked to Legacy. | Immediate / Override |
-| **Tier 1** | **Definitive Runtime Services** | Checks `ServiceManager` for `android.hardware.audio.effect.IFactory/default` and `android.hardware.audio.core.IModule/default`, or probes `lshal` for AIDL vs HIDL (`IEffectsFactory` / `IDevicesFactory`) services. | $\pm 15$ to $20\text{ pts}$ |
-| **Tier 2** | **VINTF Manifests** | Scans `/vendor/etc/vintf/`, `/odm/`, `/apex/`, and OEM product manifests for declared `format="aidl"` vs `format="hidl"` audio HAL entries. | $\pm 10$ to $15\text{ pts}$ |
-| **Tier 3** | **Active HAL Daemons & Properties** | Probes active init services (`vendor.audio-hal-aidl`, `secaudiohalaidl`, `oplus`, `vivo`, `mediatek`) and running process trees. | $\pm 8$ to $10\text{ pts}$ |
-| **Tier 4** | **Hardware Binaries & Libraries** | Inspects `/vendor/bin/hw/` and APEX modules for AIDL HAL binaries, or detects `libeffectproxy.so` (exclusive to HIDL). | $\pm 6\text{ pts}$ |
+| **Tier 1** | **Definitive Runtime Services** | Inspects Binder `ServiceManager` for `android.hardware.audio.effect.IFactory/default` and `android.hardware.audio.core.IModule/default` (strictly rejecting `"not found"`), or inspects `hwservicemanager` via `lshal` for HIDL (`IEffectsFactory` / `IDevicesFactory`) services. | $\pm 15$ to $20\text{ pts}$ |
+| **Tier 2** | **VINTF Manifests** | Scans `/vendor/etc/vintf/`, `/odm/`, `/apex/`, `/my_product/`, `/vivo_product/`, `/system_ext/`, and `/product/` for declared `format="aidl"` vs `format="hidl"` audio HAL entries. | $\pm 10$ to $15\text{ pts}$ |
+| **Tier 3** | **Active HAL Daemons & Properties** | Probes active init services (`vendor.audio-hal-aidl`, `secaudiohalaidl`, `audio.service-aidl.mediatek`, `vendor.qti.hardware.audio.service-aidl`) and running process trees with clean subshell filtering. | $\pm 8$ to $10\text{ pts}$ |
+| **Tier 4** | **Hardware Binaries & Libraries** | Inspects `/vendor/bin/hw/` and APEX modules for AIDL HAL binaries vs classic HIDL service binaries. | $\pm 6\text{ pts}$ |
 | **Tier 5** | **Effect Config Signatures** | Detects pure `audio_effects_config.xml` (AIDL) vs legacy `audio_effects.conf`. | $\pm 4$ to $6\text{ pts}$ |
-| **Tier 6** | **OS Version Baseline Prior** | Android 15+ (API 35+) removed HIDL audio HAL support (+12 AIDL); Android 14 (API 34) defaults to AIDL (+4 AIDL). | Baseline |
+| **Tier 6** | **OS Version Baseline Prior** | Android 15+ baseline prior (+8 AIDL); Android 14 baseline prior (+4 AIDL). Does not override active hardware service confirmations. | Baseline |
+
+#### AOSP Decision Tree & OEM Fallback Architecture
+In AOSP [`frameworks/av/media/libaudiohal/FactoryHal.cpp`](https://android.googlesource.com/platform/frameworks/av/+/refs/heads/main/media/libaudiohal/FactoryHal.cpp), Android initializes the audio HAL by evaluating `sAudioHALVersions`:
+1. **AIDL First**: Android queries `ServiceManager` for `android.hardware.audio.effect.IFactory/default`. If active, `audioserver` binds `libaudiohal@aidl.so` immediately.
+2. **OEM HIDL Fallback**: If AIDL is not declared (common on custom OEM ROMs like **ColorOS / OxygenOS 14/15**, where vendors retain a customized Qualcomm HIDL 7.0/7.1 stack for proprietary OReality/Dirac audio features), Android's `FactoryHal` **explicitly falls back** down the chain to `HIDL 7.1 -> 7.0 -> 6.0`.
+3. **Symmetric Resolution**:
+   - If AIDL is confirmed and HIDL is not: installs **AIDL** (`libv4a_aidl.so`).
+   - If both are reported (Qualcomm dual-stack): installs **AIDL** (following AOSP priority).
+   - If HIDL is confirmed and AIDL is not: installs **Legacy (HIDL)** (`libv4a_re.so`).
 
 ### Driver Variants & Communication Protocols
 
 #### 1. AIDL Variant (`libv4a_aidl.so`)
-* **Platform:** Designed for Android 13+ (mandatory on Android 15+).
+* **Platform:** Designed for Android 13+ (standard on modern AOSP, Pixel, and AIDL-equipped OEM ROMs).
 * **Audio Frame Path:** Audio frames and effect states travel across the standard **AOSP Fast Message Queue (Data MQ / Status MQ)** inside the vendor audio HAL process.
 * **Control & Telemetry Channel:** Control parameters, impulse responses, and telemetry between the ViPER4Android companion app and the driver travel over a **lock-free, memory-mapped Shared Memory (SHM) interface** in `/data/local/tmp/v4a/`:
   - `shm_params.bin` (4096 bytes): Double-buffered slot exchange (magic `0x534D3456`, format version 6, update counter, active slot index, `ViPERParams` struct) ensuring zero audio glitching or locking on the real-time audio thread.
@@ -56,7 +65,7 @@ During module installation, `customize.sh` executes an **AOSP-aligned 7-tier sym
   - `shm_status.bin` (256 bytes): Live driver telemetry written directly by `libv4a_aidl.so` (enabled state, configured state, 64-bit processed frame counter, active sample rate, version code) read by the app to display real-time status.
 
 #### 2. Non-AIDL / Legacy Variant (`libv4a_re.so`)
-* **Platform:** For Android 5.0 through Android 14 devices utilizing classic HALs.
+* **Platform:** For Android 5.0 through Android 15 devices utilizing classic HIDL HALs (including OnePlus / OPPO / Realme devices retaining HIDL audio stacks).
 * **Audio & Control Path:** Runs inside `audioserver`. Parameters are passed via the standard Android `effect_param_t` command interface (`EFFECT_CMD_SET_PARAM` / `EFFECT_CMD_GET_PARAM`). No SHM files are used.
 
 ### Boot Sequence & System Integration
@@ -65,22 +74,23 @@ The module performs low-level integration at multiple stages of the Android boot
 
 ```
 [Flashing: customize.sh]
-  ├── Detects HAL type (AIDL vs Legacy) via 7-tier scoring
+  ├── Detects HAL type (AIDL vs Legacy) via 7-tier scoring & AOSP priority
   ├── Installs 32-bit & 64-bit soundfx libraries
-  ├── Discovers & patches all audio_effects*.xml/conf across OEM partitions
+  ├── Discovers & patches audio configs across /vendor, /odm, /my_product, /vivo_product, sku_*
   └── Prepares partition symlinks for KernelSU / APatch
 
 [Early Boot: post-fs-data.sh]
   ├── Pre-allocates /data/local/tmp/v4a/ SHM files with 0666/0777 permissions
   ├── Sets SELinux labels to u:object_r:shell_data_file:s0
-  ├── Resets inhibition properties (ro.audio.ignore_effects=false)
-  └── Injects live SELinux policies (sepolicy.rule / magiskpolicy / ksu_policy)
+  ├── Resets inhibition properties (ro.audio.ignore_effects=false, ro.vendor.audio.ignore_effects=false)
+  ├── Executes fault-tolerant per-rule live SELinux injection (magiskpolicy / ksud / apd)
+  └── Mounts fallback bind-mounts for OEM partitions (odm, my_product, vivo_product)
 
 [Late Boot: service.sh]
   ├── Waits for sys.boot_completed=1
   ├── Enters init PID 1 mount namespace (nsenter -t 1 -m)
   ├── Shadow bind-mounts soundfx libraries and patched audio_effects configs
-  ├── Restarts audio HAL daemons (audioserver, secaudiohalaidl, vendor.audio-hal-aidl)
+  ├── Restarts audio HAL daemons (audioserver, secaudiohalaidl, vendor.oplus.hardware.audio.service, etc.)
   └── Spawns background guardian loop to keep effect properties enabled
 ```
 
@@ -92,7 +102,7 @@ The module performs low-level integration at multiple stages of the Android boot
 4. Reboot. Open the app and verify effects are applied (use any of the diagnostic commands below to confirm).
 
 > [!NOTE]
-> - **KernelSU / APatch:** The installer automatically creates partition symlinks (`system/vendor -> vendor`, etc.). If your kernel/ROM environment requires mounting files directly into `/vendor` or `/system`, ensure overlay mounting is enabled or use a metamodule like `meta-overlayfs`.
+> - **KernelSU / APatch:** The installer automatically creates partition symlinks (`system/vendor -> vendor`, etc.). If your kernel/ROM environment requires mounting files directly into `/vendor` or `/system`, ensure overlay mounting is enabled or use a metamodule like `meta-overlayfs`/`mountify`.
 > - **Audio Modification Library (AML):** AML is **incompatible** with the AIDL module variant because AML alters or strips AIDL effect registration definitions in `audio_effects_config.xml`. Disable AML when running on Android 14+ AIDL setups.
 
 ## Troubleshooting & Diagnostics
@@ -226,7 +236,7 @@ The packaged module will be generated under `out/ViPER4Android-RE-<version>.zip`
 
 ## Disclaimers
 
-- **Hardware Diversity:** While tested extensively on Pixel, Samsung, Xiaomi, and MediaTek devices across Android 10 through Android 16, OEM audio implementations vary widely. Always maintain a full device backup before flashing root modules.
+- **Hardware Diversity:** While tested extensively on Google Pixel, Samsung (OneUI), Xiaomi (HyperOS/MIUI), OnePlus / OPPO / Realme (ColorOS/OxygenOS), Vivo (OriginOS), and MediaTek devices across Android 10 through Android 16, OEM audio implementations vary widely. Always maintain a full device backup before flashing root modules.
 - **Audio Fidelity:** The DSP algorithms are modernized cleanroom implementations based on reverse-engineering of `libv4a_fx.so`. Subtle nuances in ballistics and filtering may differ from legacy 32-bit builds.
 - **Licensing:** Reverse-engineered for compatibility and preservation. Not for commercial use.
 
